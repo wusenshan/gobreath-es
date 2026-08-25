@@ -1,5 +1,9 @@
 # gobreath-es
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/wusenshan/gobreath-es.svg)](https://pkg.go.dev/github.com/wusenshan/gobreath-es)
+[![Build](https://github.com/wusenshan/gobreath-es/actions/workflows/ci.yml/badge.svg)](https://github.com/wusenshan/gobreath-es/actions/workflows/ci.yml)
+[![Go](https://img.shields.io/badge/go-1.23%2B-00ADD8)](https://go.dev)
+
 > 用此 ES 框架查数据像呼吸一样简单。
 
 `gobreath-es` 是一个 **lambda 风格、类型安全** 的 Elasticsearch Go 框架，设计哲学与
