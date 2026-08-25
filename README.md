@@ -29,6 +29,43 @@ go get github.com/wusenshan/gobreath-es
 
 ---
 
+## 请求日志
+
+开启后，每次发给 ES 的**真实请求**（HTTP 方法、端点、请求体 DSL、响应状态码、耗时）都会通过回调输出，方便调试与排查——等价于 gobreath-orm 的 SQL 日志。
+
+```go
+client, _ := es.NewClient(es.WithAddresses("http://localhost:9200"))
+
+// 方式一：内置默认日志器（输出到标准错误）
+client = client.WithLogger(es.NewStdLogger())
+
+// 方式二：自定义（可接 slog / zap）
+client = client.WithLogger(func(e es.LogEntry) {
+    fmt.Printf("%s %s -> %d (%s)\n", e.Method, e.Path, e.Status, e.Took)
+    if e.Body != "" {
+        fmt.Println(e.Body) // 即实际发给 ES 的 DSL / NDJSON
+    }
+    if e.Err != nil {
+        fmt.Println("err:", e.Err)
+    }
+})
+
+// 级别控制：LevelInfo(默认，全部) / LevelError(仅错误与 4xx) / LevelSilent(关闭)
+client = client.WithLogLevel(es.LevelError)
+```
+
+开启 `LevelInfo` 后终端示例：
+
+```
+[gobreath-es] POST products/_search 200 12.3ms
+[gobreath-es]   {"query":{"range":{"price":{"gte":1000}}},"sort":[{"price":"desc"}],"size":10}
+[gobreath-es] POST products/_bulk 200 31.0ms
+```
+
+> 日志在请求发出、收到响应后回放；`e.Body` 就是直接贴进 Kibana Dev Tools / `curl` 即可复现的 DSL。
+
+---
+
 ## 模型定义
 
 字段名以 **`json` tag** 为准（ES 文档本质是 JSON，这样「查询条件」和「文档序列化」天然一致）。

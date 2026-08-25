@@ -13,6 +13,8 @@ import (
 // Client 封装官方 go-elasticsearch 客户端，提供 gobreath-es 的传输能力。
 type Client struct {
 	*elastic.Client
+	logger   LogFunc
+	logLevel LogLevel
 }
 
 // ClientOption 配置函数。

@@ -50,6 +50,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("连接 ES 失败: %v", err)
 	}
+	// 开启请求日志：每次发给 ES 的 method/path/DSL/状态码/耗时都会打印到 stderr
+	client = client.WithLogger(es.NewStdLogger())
 	if _, err := client.Ping(ctx); err != nil {
 		log.Fatalf("ES 不可达: %v", err)
 	}
@@ -131,6 +133,7 @@ func demoAPISurface() {
 	fmt.Println("  repo.Search(ctx, es.NewQuery[Product]().Eq(Col, v).Ge(Col, n).OrderBy(Col, false).Size(n))")
 	fmt.Println("  repo.Count(ctx, q) / repo.Aggregate(ctx, q)")
 	fmt.Println("  es.NewAggregation().Terms(...).Avg(...)")
+	fmt.Println("  client.WithLogger(es.NewStdLogger()) // 开启请求日志(可接 slog/zap)，打印每次请求的 DSL/状态码/耗时")
 	fmt.Println("  -- 突破 10000 上限 --")
 	fmt.Println("  pitID, _ := repo.OpenPIT(ctx, \"1m\")")
 	fmt.Println("  repo.Search(ctx, es.NewQuery[Product]().OrderBy(priceCol,true).PIT(pitID,\"\").SearchAfter(1000.0))")

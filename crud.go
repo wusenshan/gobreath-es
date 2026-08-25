@@ -20,11 +20,17 @@ func (c *Client) IndexDoc(ctx context.Context, index string, id string, doc any)
 	if err != nil {
 		return fmt.Errorf("gobreath-es: 序列化文档失败: %w", err)
 	}
+	path := index + "/_doc"
+	if id != "" {
+		path = index + "/_doc/" + id
+	}
 	opts := []func(*esapi.IndexRequest){c.Client.Index.WithContext(ctx)}
 	if id != "" {
 		opts = append(opts, c.Client.Index.WithDocumentID(id))
 	}
-	res, err := c.Client.Index(index, bytes.NewReader(body), opts...)
+	res, err := c.doLog("POST", path, body, func() (*esapi.Response, error) {
+		return c.Client.Index(index, bytes.NewReader(body), opts...)
+	})
 	m, err := decodeResponse(res, err)
 	if err != nil {
 		return err
@@ -61,10 +67,13 @@ func (c *Client) BulkIndexDocs(ctx context.Context, index string, docs []any, id
 		b.Write(db)
 		b.WriteByte('\n')
 	}
-	res, err := c.Client.Bulk(
-		bytes.NewReader([]byte(b.String())),
-		c.Client.Bulk.WithContext(ctx),
-	)
+	ndjson := []byte(b.String())
+	res, err := c.doLog("POST", index+"/_bulk", ndjson, func() (*esapi.Response, error) {
+		return c.Client.Bulk(
+			bytes.NewReader(ndjson),
+			c.Client.Bulk.WithContext(ctx),
+		)
+	})
 	m, err := decodeResponse(res, err)
 	if err != nil {
 		return err
@@ -77,7 +86,9 @@ func (c *Client) BulkIndexDocs(ctx context.Context, index string, docs []any, id
 
 // GetDoc 按 id 读取文档，反序列化到 dest。不存在返回 ErrNotFound。
 func (c *Client) GetDoc(ctx context.Context, index, id string, dest any) error {
-	res, err := c.Client.Get(index, id, c.Client.Get.WithContext(ctx))
+	res, err := c.doLog("GET", index+"/_doc/"+id, nil, func() (*esapi.Response, error) {
+		return c.Client.Get(index, id, c.Client.Get.WithContext(ctx))
+	})
 	if err != nil {
 		return err
 	}
@@ -106,7 +117,9 @@ func (c *Client) GetDoc(ctx context.Context, index, id string, dest any) error {
 
 // DeleteDoc 按 id 删除文档。不存在视为成功（幂等）。
 func (c *Client) DeleteDoc(ctx context.Context, index, id string) error {
-	res, err := c.Client.Delete(index, id, c.Client.Delete.WithContext(ctx))
+	res, err := c.doLog("DELETE", index+"/_doc/"+id, nil, func() (*esapi.Response, error) {
+		return c.Client.Delete(index, id, c.Client.Delete.WithContext(ctx))
+	})
 	if err != nil {
 		return err
 	}
@@ -127,17 +140,21 @@ func (c *Client) UpdateDoc(ctx context.Context, index, id string, partial any) e
 	if err != nil {
 		return err
 	}
-	res, err := c.Client.Update(
-		index, id, bytes.NewReader(body),
-		c.Client.Update.WithContext(ctx),
-	)
+	res, err := c.doLog("POST", index+"/_update/"+id, body, func() (*esapi.Response, error) {
+		return c.Client.Update(
+			index, id, bytes.NewReader(body),
+			c.Client.Update.WithContext(ctx),
+		)
+	})
 	_, err = decodeResponse(res, err)
 	return err
 }
 
 // DocExists 判断文档是否存在。
 func (c *Client) DocExists(ctx context.Context, index, id string) (bool, error) {
-	res, err := c.Client.Exists(index, id, c.Client.Exists.WithContext(ctx))
+	res, err := c.doLog("HEAD", index+"/_doc/"+id, nil, func() (*esapi.Response, error) {
+		return c.Client.Exists(index, id, c.Client.Exists.WithContext(ctx))
+	})
 	if err != nil {
 		return false, err
 	}
@@ -163,6 +180,10 @@ func (c *Client) searchRaw(ctx context.Context, index string, body map[string]an
 	if err != nil {
 		return nil, nil, 0, 0, err
 	}
+	path := "_search"
+	if !usePIT {
+		path = index + "/_search"
+	}
 	opts := []func(*esapi.SearchRequest){
 		c.Client.Search.WithContext(ctx),
 		c.Client.Search.WithBody(bytes.NewReader(b)),
@@ -170,7 +191,9 @@ func (c *Client) searchRaw(ctx context.Context, index string, body map[string]an
 	if !usePIT {
 		opts = append(opts, c.Client.Search.WithIndex(index))
 	}
-	res, err := c.Client.Search(opts...)
+	res, err := c.doLog("POST", path, b, func() (*esapi.Response, error) {
+		return c.Client.Search(opts...)
+	})
 	m, err := decodeResponse(res, err)
 	if err != nil {
 		return nil, nil, 0, 0, err
@@ -204,11 +227,13 @@ func (c *Client) CountRaw(ctx context.Context, index string, query map[string]an
 	if err != nil {
 		return 0, err
 	}
-	res, err := c.Client.Count(
-		c.Client.Count.WithIndex(index),
-		c.Client.Count.WithBody(bytes.NewReader(body)),
-		c.Client.Count.WithContext(ctx),
-	)
+	res, err := c.doLog("POST", index+"/_count", body, func() (*esapi.Response, error) {
+		return c.Client.Count(
+			c.Client.Count.WithIndex(index),
+			c.Client.Count.WithBody(bytes.NewReader(body)),
+			c.Client.Count.WithContext(ctx),
+		)
+	})
 	m, err := decodeResponse(res, err)
 	if err != nil {
 		return 0, err
@@ -225,11 +250,13 @@ func (c *Client) CreateIndexRaw(ctx context.Context, index string, body map[stri
 	if err != nil {
 		return err
 	}
-	res, err := c.Client.Indices.Create(
-		index,
-		c.Client.Indices.Create.WithBody(bytes.NewReader(b)),
-		c.Client.Indices.Create.WithContext(ctx),
-	)
+	res, err := c.doLog("PUT", index, b, func() (*esapi.Response, error) {
+		return c.Client.Indices.Create(
+			index,
+			c.Client.Indices.Create.WithBody(bytes.NewReader(b)),
+			c.Client.Indices.Create.WithContext(ctx),
+		)
+	})
 	if err != nil {
 		return err
 	}
@@ -256,11 +283,13 @@ func (c *Client) OpenPIT(ctx context.Context, index, keepAlive string) (string, 
 	if keepAlive == "" {
 		keepAlive = "1m"
 	}
-	res, err := c.Client.OpenPointInTime(
-		[]string{index},
-		keepAlive,
-		c.Client.OpenPointInTime.WithContext(ctx),
-	)
+	res, err := c.doLog("POST", "_pit", nil, func() (*esapi.Response, error) {
+		return c.Client.OpenPointInTime(
+			[]string{index},
+			keepAlive,
+			c.Client.OpenPointInTime.WithContext(ctx),
+		)
+	})
 	m, err := decodeResponse(res, err)
 	if err != nil {
 		return "", err
@@ -274,10 +303,12 @@ func (c *Client) OpenPIT(ctx context.Context, index, keepAlive string) (string, 
 // ClosePIT 关闭一个 Point In Time，释放集群资源。翻页完成后务必调用。
 func (c *Client) ClosePIT(ctx context.Context, id string) error {
 	body, _ := json.Marshal(map[string]any{"id": id})
-	res, err := c.Client.ClosePointInTime(
-		c.Client.ClosePointInTime.WithContext(ctx),
-		c.Client.ClosePointInTime.WithBody(bytes.NewReader(body)),
-	)
+	res, err := c.doLog("DELETE", "_pit", body, func() (*esapi.Response, error) {
+		return c.Client.ClosePointInTime(
+			c.Client.ClosePointInTime.WithContext(ctx),
+			c.Client.ClosePointInTime.WithBody(bytes.NewReader(body)),
+		)
+	})
 	_, err = decodeResponse(res, err)
 	return err
 }
@@ -290,21 +321,25 @@ func (c *Client) PutIndexTemplate(ctx context.Context, name string, body map[str
 	if err != nil {
 		return err
 	}
-	res, err := c.Client.Indices.PutIndexTemplate(
-		name,
-		bytes.NewReader(b),
-		c.Client.Indices.PutIndexTemplate.WithContext(ctx),
-	)
+	res, err := c.doLog("PUT", "_index_template/"+name, b, func() (*esapi.Response, error) {
+		return c.Client.Indices.PutIndexTemplate(
+			name,
+			bytes.NewReader(b),
+			c.Client.Indices.PutIndexTemplate.WithContext(ctx),
+		)
+	})
 	_, err = decodeResponse(res, err)
 	return err
 }
 
 // GetIndexTemplate 读取组合式索引模板，返回响应里的 index_templates 数组（通常为单元素）。
 func (c *Client) GetIndexTemplate(ctx context.Context, name string) ([]map[string]any, error) {
-	res, err := c.Client.Indices.GetIndexTemplate(
-		c.Client.Indices.GetIndexTemplate.WithContext(ctx),
-		c.Client.Indices.GetIndexTemplate.WithName(name),
-	)
+	res, err := c.doLog("GET", "_index_template/"+name, nil, func() (*esapi.Response, error) {
+		return c.Client.Indices.GetIndexTemplate(
+			c.Client.Indices.GetIndexTemplate.WithContext(ctx),
+			c.Client.Indices.GetIndexTemplate.WithName(name),
+		)
+	})
 	m, err := decodeResponse(res, err)
 	if err != nil {
 		return nil, err
@@ -323,10 +358,12 @@ func (c *Client) GetIndexTemplate(ctx context.Context, name string) ([]map[strin
 
 // DeleteIndexTemplate 删除组合式索引模板（不存在视为成功）。
 func (c *Client) DeleteIndexTemplate(ctx context.Context, name string) error {
-	res, err := c.Client.Indices.DeleteIndexTemplate(
-		name,
-		c.Client.Indices.DeleteIndexTemplate.WithContext(ctx),
-	)
+	res, err := c.doLog("DELETE", "_index_template/"+name, nil, func() (*esapi.Response, error) {
+		return c.Client.Indices.DeleteIndexTemplate(
+			name,
+			c.Client.Indices.DeleteIndexTemplate.WithContext(ctx),
+		)
+	})
 	if err != nil {
 		return err
 	}
@@ -343,10 +380,12 @@ func (c *Client) DeleteIndexTemplate(ctx context.Context, name string) error {
 
 // IndexTemplateExists 判断组合式索引模板是否存在。
 func (c *Client) IndexTemplateExists(ctx context.Context, name string) (bool, error) {
-	res, err := c.Client.Indices.ExistsIndexTemplate(
-		name,
-		c.Client.Indices.ExistsIndexTemplate.WithContext(ctx),
-	)
+	res, err := c.doLog("HEAD", "_index_template/"+name, nil, func() (*esapi.Response, error) {
+		return c.Client.Indices.ExistsIndexTemplate(
+			name,
+			c.Client.Indices.ExistsIndexTemplate.WithContext(ctx),
+		)
+	})
 	if err != nil {
 		return false, err
 	}
