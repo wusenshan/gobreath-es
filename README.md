@@ -175,6 +175,8 @@ ES_ADDR=http://localhost:9200 ES_USER=elastic ES_PASS=xxxx go run ./example
 
 - `OrderBy(col, asc)` / `OrderByScore(asc)`
 - `From(n)` / `Size(n)`（同时提供 `Offset`/`Limit` 别名）
+- `SearchAfter(vals...)`：search_after 游标（深翻页，配合 PIT）
+- `PIT(id, keepAlive)`：绑定 Point In Time，走一致性快照翻页（与 SearchAfter 配合）
 - `TrackTotalHits(true)`：精确统计总命中数
 - `Source(cols...)`：`_source` 字段白名单
 - `Highlight(cols...)`：开启高亮
@@ -212,6 +214,96 @@ result, _ := repo.Aggregate(ctx, es.NewQuery[Product]().Aggregate(aggs))
 
 ---
 
+## 突破 10000 上限（深翻页 & 超量聚合）
+
+ES 有两个常见的「软上限」：`index.max_result_window`（默认 10000，限制 `from+size`）与
+`search.max_buckets`（桶数上限，版本相关）。**它们不是硬天花板，官方提供了不调设置的突破方式**，
+本框架把它们封装为类型安全 API，而不是偷偷改大配置（那是反模式，会抬升堆内存与集群风险）。
+
+### 深翻页：SearchAfter + PIT（突破结果数上限）
+
+`from+size` 超过 10000 会报错；正确姿势是 **SearchAfter**（游标）+ **PIT**（一致性快照）：
+
+```go
+price := es.Col[Product](func(p *Product) *float64 { return &p.Price })
+id    := es.Col[Product](func(p *Product) *string { return &p.ID })
+
+pitID, _ := repo.OpenPIT(ctx, "1m")           // 1) 开一个一致性快照
+defer repo.ClosePIT(ctx, pitID)               // 翻完务必关闭
+
+var lastPrice float64
+var lastID string
+for {
+    q := es.NewQuery[Product]().
+        OrderBy(price, true).                 // 排序里必须含唯一 tie-breaker
+        OrderBy(id, true).                    // 用 id 兜底，避免副本间顺序抖动
+        Size(1000).
+        PIT(pitID, "")                        // 绑定 PIT
+    if lastID != "" {
+        q.SearchAfter(lastPrice, lastID)      // 2) 用上一页最后一条的 sort 值续接
+    }
+    res, _ := repo.Search(ctx, q)
+    if len(res.Hits) == 0 {
+        break
+    }
+    last := res.Hits[len(res.Hits)-1]
+    lastPrice, lastID = last.Price, last.ID
+}
+```
+
+> 要点：`SearchAfter(...)` 的字段、顺序、类型必须与 `OrderBy` 严格一致；排序务必包含唯一字段
+> （如 `id`）作 tie-breaker，否则副本间顺序可能不一致。绑定 PIT 后 `from` 会被自动忽略。
+
+### 超量聚合：Composite（突破桶数上限）
+
+`search.max_buckets` 超限时，改用 **Composite 聚合**（官方唯一可翻页的聚合），用 `After(...)` 续接：
+
+```go
+cat  := es.Col[Product](func(p *Product) *int64 { return &p.CatID })
+date := es.Col[Product](func(p *Product) *time.Time { return &p.CreatedAt })
+
+comp := es.NewComposite("by_cat_date").
+    Terms("cat", cat, "").                         // 分组源1
+    DateHistogram("date", date, "day", "yyyy-MM-dd", "asc"). // 分组源2
+    Size(1000)                                     // 每页桶数
+comp.Sub(es.NewAgg("avg_price", "avg", map[string]any{"field": "price"}))
+
+aggs := es.NewAggregation().Add(comp.Agg())
+result, _ := repo.Aggregate(ctx, es.NewQuery[Product]().Aggregate(aggs))
+
+// 翻页：取上一页最后一个 bucket 的 key 作为 After
+lastKey := map[string]any{"cat": "1", "date": "2026-01-01"}
+comp2 := es.NewComposite("by_cat_date").
+    Terms("cat", cat, "").DateHistogram("date", date, "day", "yyyy-MM-dd", "asc").
+    Size(1000).After(lastKey)
+```
+
+---
+
+## 索引模板
+
+用组合式索引模板（`_index_template`）让所有匹配 `index_patterns` 的新索引自动套用本模型的
+mapping/settings，无需逐个 `CreateIndex`：
+
+```go
+body := es.BuildIndexTemplate[Product](es.TemplateOptions{
+    Patterns: []string{"products-*"},   // 匹配 products-2026、products-log 等
+    Priority: 100,                       // 覆盖同 pattern 的其他模板
+    Shards:  1,
+    Replicas: 1,
+    Version:  1,
+    Meta:     map[string]any{"owner": "search-team"},
+})
+repo.PutIndexTemplate(ctx, "products-template", body)
+
+// 其它操作
+repo.GetIndexTemplate(ctx, "products-template")
+repo.DeleteIndexTemplate(ctx, "products-template")   // 不存在视为成功
+exists, _ := repo.IndexTemplateExists(ctx, "products-template")
+```
+
+---
+
 ## 泛型仓储 `Repo[T]`
 
 因 Go 不支持泛型方法，`Repo` 用 `NewRepo[T](client)` 函数式绑定（与 `gobreath-orm` 一致）：
@@ -230,6 +322,14 @@ repo.Delete(ctx, id)                         // 按 id 删除（幂等）
 repo.Search(ctx, q) -> (*SearchResult[T], error)
 repo.Count(ctx, q) -> (int64, error)
 repo.Aggregate(ctx, q) -> (map[string]any, error)
+
+// 突破 10000 上限 & 索引模板
+repo.OpenPIT(ctx, keepAlive) -> (pitID string, error)
+repo.ClosePIT(ctx, pitID) -> error
+repo.PutIndexTemplate(ctx, name, body) -> error
+repo.GetIndexTemplate(ctx, name) -> ([]map[string]any, error)
+repo.DeleteIndexTemplate(ctx, name) -> error
+repo.IndexTemplateExists(ctx, name) -> (bool, error)
 ```
 
 `SearchResult[T]` 携带 `Total` / `Took` / `Hits []T` / `Raw`，并可用 `Aggregations()` 取聚合结果。

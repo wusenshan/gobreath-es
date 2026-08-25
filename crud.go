@@ -157,16 +157,20 @@ func (c *Client) DocExists(ctx context.Context, index, id string) (bool, error) 
 }
 
 // searchRaw 执行 _search，返回原始响应 map、命中 hit（含 _source/_id）列表、总数、耗时。
-func (c *Client) searchRaw(ctx context.Context, index string, body map[string]any) (map[string]any, []json.RawMessage, int64, int, error) {
+// usePIT=true 时省略索引名（PIT 必须走全局 _search）。
+func (c *Client) searchRaw(ctx context.Context, index string, body map[string]any, usePIT bool) (map[string]any, []json.RawMessage, int64, int, error) {
 	b, err := json.Marshal(body)
 	if err != nil {
 		return nil, nil, 0, 0, err
 	}
-	res, err := c.Client.Search(
+	opts := []func(*esapi.SearchRequest){
 		c.Client.Search.WithContext(ctx),
-		c.Client.Search.WithIndex(index),
 		c.Client.Search.WithBody(bytes.NewReader(b)),
-	)
+	}
+	if !usePIT {
+		opts = append(opts, c.Client.Search.WithIndex(index))
+	}
+	res, err := c.Client.Search(opts...)
 	m, err := decodeResponse(res, err)
 	if err != nil {
 		return nil, nil, 0, 0, err
@@ -242,4 +246,121 @@ func (c *Client) CreateIndexRaw(ctx context.Context, index string, body map[stri
 		return fmt.Errorf("gobreath-es: 创建索引失败 status=%d body=%s", res.StatusCode, string(b2))
 	}
 	return nil
+}
+
+// ---- Point In Time（一致性翻页快照）----
+
+// OpenPIT 开启一个 Point In Time，返回 pit id。keepAlive 为空默认 "1m"。
+// 该 id 应传给 Query.PIT，并与 SearchAfter 配合实现不受 max_result_window 限制的深翻页。
+func (c *Client) OpenPIT(ctx context.Context, index, keepAlive string) (string, error) {
+	if keepAlive == "" {
+		keepAlive = "1m"
+	}
+	res, err := c.Client.OpenPointInTime(
+		[]string{index},
+		keepAlive,
+		c.Client.OpenPointInTime.WithContext(ctx),
+	)
+	m, err := decodeResponse(res, err)
+	if err != nil {
+		return "", err
+	}
+	if id, ok := m["id"].(string); ok {
+		return id, nil
+	}
+	return "", fmt.Errorf("gobreath-es: OpenPIT 响应缺少 id: %v", m)
+}
+
+// ClosePIT 关闭一个 Point In Time，释放集群资源。翻页完成后务必调用。
+func (c *Client) ClosePIT(ctx context.Context, id string) error {
+	body, _ := json.Marshal(map[string]any{"id": id})
+	res, err := c.Client.ClosePointInTime(
+		c.Client.ClosePointInTime.WithContext(ctx),
+		c.Client.ClosePointInTime.WithBody(bytes.NewReader(body)),
+	)
+	_, err = decodeResponse(res, err)
+	return err
+}
+
+// ---- 组合式索引模板（_index_template）----
+
+// PutIndexTemplate 创建/更新组合式索引模板。body 一般为 BuildIndexTemplate[T] 的产出。
+func (c *Client) PutIndexTemplate(ctx context.Context, name string, body map[string]any) error {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	res, err := c.Client.Indices.PutIndexTemplate(
+		name,
+		bytes.NewReader(b),
+		c.Client.Indices.PutIndexTemplate.WithContext(ctx),
+	)
+	_, err = decodeResponse(res, err)
+	return err
+}
+
+// GetIndexTemplate 读取组合式索引模板，返回响应里的 index_templates 数组（通常为单元素）。
+func (c *Client) GetIndexTemplate(ctx context.Context, name string) ([]map[string]any, error) {
+	res, err := c.Client.Indices.GetIndexTemplate(
+		c.Client.Indices.GetIndexTemplate.WithContext(ctx),
+		c.Client.Indices.GetIndexTemplate.WithName(name),
+	)
+	m, err := decodeResponse(res, err)
+	if err != nil {
+		return nil, err
+	}
+	if arr, ok := m["index_templates"].([]any); ok {
+		out := make([]map[string]any, 0, len(arr))
+		for _, it := range arr {
+			if mp, ok := it.(map[string]any); ok {
+				out = append(out, mp)
+			}
+		}
+		return out, nil
+	}
+	return []map[string]any{}, nil
+}
+
+// DeleteIndexTemplate 删除组合式索引模板（不存在视为成功）。
+func (c *Client) DeleteIndexTemplate(ctx context.Context, name string) error {
+	res, err := c.Client.Indices.DeleteIndexTemplate(
+		name,
+		c.Client.Indices.DeleteIndexTemplate.WithContext(ctx),
+	)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if res.IsError() {
+		b, _ := io.ReadAll(res.Body)
+		return fmt.Errorf("gobreath-es: 删除索引模板失败 status=%d body=%s", res.StatusCode, string(b))
+	}
+	return nil
+}
+
+// IndexTemplateExists 判断组合式索引模板是否存在。
+func (c *Client) IndexTemplateExists(ctx context.Context, name string) (bool, error) {
+	res, err := c.Client.Indices.ExistsIndexTemplate(
+		name,
+		c.Client.Indices.ExistsIndexTemplate.WithContext(ctx),
+	)
+	if err != nil {
+		return false, err
+	}
+	defer res.Body.Close()
+	switch res.StatusCode {
+	case http.StatusOK:
+		return true, nil
+	case http.StatusNotFound:
+		return false, nil
+	default:
+		if res.IsError() {
+			b, _ := io.ReadAll(res.Body)
+			return false, fmt.Errorf("gobreath-es: 模板存在性检查失败 status=%d body=%s", res.StatusCode, string(b))
+		}
+		return false, nil
+	}
 }

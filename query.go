@@ -19,20 +19,23 @@ type sortClause struct {
 // 分组语义与 gobreath-orm 一致：每个条件默认自成一组（组间 AND）；
 // 调用 Or() 后，下一个条件与上一条件归入同一组、组内 OR 连接。
 type Query[T any] struct {
-	must      [][]leaf
-	should    [][]leaf
-	mustNot   [][]leaf
-	filter    [][]leaf
-	cur       *[][]leaf // 当前写入的桶（must/should/mustNot/filter 之一）
-	stack     []*[][]leaf
-	orMode    bool
-	orders    []sortClause
-	from      int
-	size      int
-	trackAll  *bool        // nil 表示不设置 track_total_hits
-	source    []string     // _source include；nil 表示返回全部
-	aggs      *Aggregation // 聚合（可选）
-	highlight []string     // 高亮字段（可选）
+	must        [][]leaf
+	should      [][]leaf
+	mustNot     [][]leaf
+	filter      [][]leaf
+	cur         *[][]leaf // 当前写入的桶（must/should/mustNot/filter 之一）
+	stack       []*[][]leaf
+	orMode      bool
+	orders      []sortClause
+	from        int
+	size        int
+	trackAll    *bool        // nil 表示不设置 track_total_hits
+	source      []string     // _source include；nil 表示返回全部
+	aggs        *Aggregation // 聚合（可选）
+	highlight   []string     // 高亮字段（可选）
+	searchAfter []any        // search_after 游标（深分页）
+	pitID       string       // Point In Time id（一致性翻页，与 SearchAfter 配合）
+	pitKeep     string       // PIT keep_alive
 }
 
 // NewQuery 创建针对类型 T 对应索引的查询构造器。
@@ -305,6 +308,29 @@ func (q *Query[T]) Highlight(cols ...ColExpr) *Query[T] {
 	return q
 }
 
+// SearchAfter 设置 search_after 游标，是 ES 官方推荐的"突破 10000 条 from+size 上限"的深分页方式。
+// vals 必须与 OrderBy 的排序字段顺序、类型严格对应；为获得稳定分页，排序里务必包含唯一字段（如 id）作为 tie-breaker。
+// 注意：使用 SearchAfter 时不应再设置 From（会失效）。
+func (q *Query[T]) SearchAfter(vals ...any) *Query[T] {
+	q.searchAfter = vals
+	return q
+}
+
+// PIT 绑定一个已开启的 Point In Time（一致性翻页快照）。与 SearchAfter 配合可安全、无重复的翻全量数据，
+// 且不受 index.max_result_window 限制。keepAlive 为空时默认 "1m"。
+// 开启/关闭请使用 Client.OpenPIT / Client.ClosePIT（或 Repo 同名方法）。
+func (q *Query[T]) PIT(id, keepAlive string) *Query[T] {
+	q.pitID = id
+	if keepAlive == "" {
+		keepAlive = "1m"
+	}
+	q.pitKeep = keepAlive
+	return q
+}
+
+// HasPIT 是否绑定了 PIT。检索时据此决定是否改用全局 _search（省略索引名）。
+func (q *Query[T]) HasPIT() bool { return q.pitID != "" }
+
 // ---- 渲染 ----
 
 // BuildQuery 产出 bool 查询 DSL（map）。
@@ -368,11 +394,18 @@ func (q *Query[T]) BuildBody() map[string]any {
 		}
 		body["sort"] = sorts
 	}
-	if q.from > 0 {
+	// PIT 与 from 互斥（ES 不允许同时使用），绑定 PIT 时丢弃 from。
+	if q.from > 0 && q.pitID == "" {
 		body["from"] = q.from
 	}
 	if q.size > 0 {
 		body["size"] = q.size
+	}
+	if q.pitID != "" {
+		body["pit"] = map[string]any{"id": q.pitID, "keep_alive": q.pitKeep}
+	}
+	if len(q.searchAfter) > 0 {
+		body["search_after"] = q.searchAfter
 	}
 	if q.source != nil {
 		body["_source"] = q.source

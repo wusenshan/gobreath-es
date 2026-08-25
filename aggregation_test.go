@@ -28,3 +28,32 @@ func TestDateHistogramAgg(t *testing.T) {
 	want := `{"per_day":{"date_histogram":{"calendar_interval":"day","field":"created_at","format":"yyyy-MM-dd"}}}`
 	assertJSON(t, string(b), want)
 }
+
+func TestCompositeAgg(t *testing.T) {
+	cat := Col[product](func(p *product) *int64 { return &p.CatID })
+	date := ColExpr{name: "created_at"}
+	price := Col[product](func(p *product) *float64 { return &p.Price })
+
+	comp := NewComposite("by_cat_date").
+		Terms("cat", cat, "").
+		DateHistogram("date", date, "day", "yyyy-MM-dd", "asc").
+		Size(1000)
+	comp.Sub(NewAgg("avg_price", "avg", map[string]any{"field": price.name}))
+
+	aggs := NewAggregation()
+	aggs.Add(comp.Agg())
+
+	b, _ := json.Marshal(aggs.Build())
+	want := `{"by_cat_date":{"composite":{"size":1000,"sources":[{"cat":{"terms":{"field":"cat_id"}}},{"date":{"date_histogram":{"calendar_interval":"day","field":"created_at","format":"yyyy-MM-dd","order":"asc"}}}]},"aggs":{"avg_price":{"avg":{"field":"price"}}}}}`
+	assertJSON(t, string(b), want)
+}
+
+func TestCompositeAggAfter(t *testing.T) {
+	cat := Col[product](func(p *product) *int64 { return &p.CatID })
+	comp := NewComposite("by_cat").Terms("cat", cat, "").After(map[string]any{"cat": "1"})
+	aggs := NewAggregation()
+	aggs.Add(comp.Agg())
+	b, _ := json.Marshal(aggs.Build())
+	want := `{"by_cat":{"composite":{"after":{"cat":"1"},"sources":[{"cat":{"terms":{"field":"cat_id"}}}]}}}`
+	assertJSON(t, string(b), want)
+}

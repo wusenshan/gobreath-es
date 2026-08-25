@@ -139,7 +139,7 @@ func (r *Repo[T]) Update(ctx context.Context, id string, partial any) error {
 
 // Search 执行检索，返回泛型结果（含文档列表与聚合）。
 func (r *Repo[T]) Search(ctx context.Context, q *Query[T]) (*SearchResult[T], error) {
-	raw, hits, total, took, err := r.cli.searchRaw(ctx, r.index, q.BuildBody())
+	raw, hits, total, took, err := r.cli.searchRaw(ctx, r.index, q.BuildBody(), q.HasPIT())
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +162,7 @@ func (r *Repo[T]) Aggregate(ctx context.Context, q *Query[T]) (map[string]any, e
 		body["aggs"] = q.aggs.Build()
 	}
 	body["size"] = 0
-	raw, _, _, _, err := r.cli.searchRaw(ctx, r.index, body)
+	raw, _, _, _, err := r.cli.searchRaw(ctx, r.index, body, q.HasPIT())
 	if err != nil {
 		return nil, err
 	}
@@ -175,4 +175,36 @@ func (r *Repo[T]) Aggregate(ctx context.Context, q *Query[T]) (map[string]any, e
 // CreateIndex 根据模型 T 自动建索引（含 mapping 与可选 settings）。
 func (r *Repo[T]) CreateIndex(ctx context.Context, shards, replicas int) error {
 	return r.cli.CreateIndexRaw(ctx, r.index, BuildMapping[T](shards, replicas))
+}
+
+// ---- Point In Time & 索引模板 ----
+
+// OpenPIT 开启本仓储索引的 Point In Time（一致性翻页快照）。
+func (r *Repo[T]) OpenPIT(ctx context.Context, keepAlive string) (string, error) {
+	return r.cli.OpenPIT(ctx, r.index, keepAlive)
+}
+
+// ClosePIT 关闭一个 Point In Time，释放集群资源。
+func (r *Repo[T]) ClosePIT(ctx context.Context, id string) error {
+	return r.cli.ClosePIT(ctx, id)
+}
+
+// PutIndexTemplate 创建/更新组合式索引模板（body 由 BuildIndexTemplate[T] 产出）。
+func (r *Repo[T]) PutIndexTemplate(ctx context.Context, name string, body map[string]any) error {
+	return r.cli.PutIndexTemplate(ctx, name, body)
+}
+
+// GetIndexTemplate 读取组合式索引模板。
+func (r *Repo[T]) GetIndexTemplate(ctx context.Context, name string) ([]map[string]any, error) {
+	return r.cli.GetIndexTemplate(ctx, name)
+}
+
+// DeleteIndexTemplate 删除组合式索引模板（不存在视为成功）。
+func (r *Repo[T]) DeleteIndexTemplate(ctx context.Context, name string) error {
+	return r.cli.DeleteIndexTemplate(ctx, name)
+}
+
+// IndexTemplateExists 判断组合式索引模板是否存在。
+func (r *Repo[T]) IndexTemplateExists(ctx context.Context, name string) (bool, error) {
+	return r.cli.IndexTemplateExists(ctx, name)
 }

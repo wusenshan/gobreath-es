@@ -118,3 +118,95 @@ func (a *Aggregation) Build() map[string]any {
 	}
 	return out
 }
+
+// NewAgg 显式构造一个聚合节点（用于组合 / 子聚合 / 自定义类型）。
+func NewAgg(name, typ string, body map[string]any) *Agg {
+	return &Agg{name: name, typ: typ, body: body}
+}
+
+// compositeSource 组合聚合的一个分组源（terms / histogram / date_histogram）。
+type compositeSource struct {
+	name     string
+	kind     string // terms | histogram | date_histogram
+	field    string
+	interval string
+	format   string
+	order    string
+}
+
+// CompositeAgg 组合聚合（composite）构造器。它是 ES 官方推荐的"可翻页聚合"方式，
+// 用于突破 search.max_buckets 对单请求桶总数的限制。每页通过 After(map) 续接上一页的 key。
+type CompositeAgg struct {
+	name    string
+	size    int
+	after   map[string]any
+	sources []compositeSource
+	subs    map[string]*Agg
+}
+
+// NewComposite 创建组合聚合构造器，name 为其在 aggs 下的 key。
+func NewComposite(name string) *CompositeAgg {
+	return &CompositeAgg{name: name}
+}
+
+// Terms 增加一个 terms 类型的分组源。
+func (c *CompositeAgg) Terms(name string, col ColExpr, order string) *CompositeAgg {
+	c.sources = append(c.sources, compositeSource{name: name, kind: "terms", field: col.name, order: order})
+	return c
+}
+
+// Histogram 增加一个数值直方图分组源（interval 为数值字符串，如 "10"）。
+func (c *CompositeAgg) Histogram(name string, col ColExpr, interval string, order string) *CompositeAgg {
+	c.sources = append(c.sources, compositeSource{name: name, kind: "histogram", field: col.name, interval: interval, order: order})
+	return c
+}
+
+// DateHistogram 增加一个日期直方图分组源（calendarInterval 如 "day"，format 如 "yyyy-MM-dd"）。
+func (c *CompositeAgg) DateHistogram(name string, col ColExpr, interval, format, order string) *CompositeAgg {
+	c.sources = append(c.sources, compositeSource{name: name, kind: "date_histogram", field: col.name, interval: interval, format: format, order: order})
+	return c
+}
+
+// Size 设置每页桶数（ES 对 composite 的 size 上限通常为 10000）。
+func (c *CompositeAgg) Size(n int) *CompositeAgg { c.size = n; return c }
+
+// After 设置翻页游标（取上一页最后一个 bucket 的 key 作为 map，如 {"cat":"1","date":"2026-01-01"}）。
+func (c *CompositeAgg) After(after map[string]any) *CompositeAgg { c.after = after; return c }
+
+// Sub 追加子聚合（桶内指标，如 avg/sum）。
+func (c *CompositeAgg) Sub(sub *Agg) *CompositeAgg {
+	if c.subs == nil {
+		c.subs = map[string]*Agg{}
+	}
+	c.subs[sub.name] = sub
+	return c
+}
+
+// Agg 渲染为 *Agg，经 Aggregation.Add 即可加入聚合容器。
+func (c *CompositeAgg) Agg() *Agg {
+	sources := make([]map[string]any, 0, len(c.sources))
+	for _, s := range c.sources {
+		inner := map[string]any{"field": s.field}
+		switch s.kind {
+		case "histogram":
+			inner["interval"] = s.interval
+		case "date_histogram":
+			inner["calendar_interval"] = s.interval
+			if s.format != "" {
+				inner["format"] = s.format
+			}
+		}
+		if s.order != "" {
+			inner["order"] = s.order
+		}
+		sources = append(sources, map[string]any{s.name: map[string]any{s.kind: inner}})
+	}
+	comp := map[string]any{"sources": sources}
+	if c.size > 0 {
+		comp["size"] = c.size
+	}
+	if c.after != nil {
+		comp["after"] = c.after
+	}
+	return &Agg{name: c.name, typ: "composite", body: comp, subs: c.subs}
+}

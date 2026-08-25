@@ -100,10 +100,20 @@ func cut(tag string) string {
 	return tag
 }
 
-// BuildMapping 根据模型 T 推导 ES 索引 mapping（properties 部分）。
-// 可在 type 上通过 es:"type:keyword" 等覆盖推断类型。
-// shards/replicas 用于 settings；传 0 表示沿用集群默认。
-func BuildMapping[T any](shards, replicas int) map[string]any {
+// TemplateOptions 组合式索引模板（_index_template）的可选项。
+type TemplateOptions struct {
+	Patterns   []string       // index_patterns，必填，如 []string{"logs-*"}
+	Priority   int            // 优先级：覆盖同 pattern 的其他模板；<=0 时默认 100
+	Shards     int            // 主分片数；0 沿用集群默认
+	Replicas   int            // 副本数；0 沿用集群默认
+	ComposedOf []string       // 组件模板名列表（可选，引用既有 component template）
+	Version    int            // 模板版本（可选）
+	Meta       map[string]any // _meta 自定义元数据（可选）
+	Aliases    map[string]any // 别名定义（可选）
+}
+
+// mappingAndSettings 根据模型 T 推导 mappings（properties）与可选 settings。
+func mappingAndSettings[T any](shards, replicas int) (map[string]any, map[string]any) {
 	m := getMeta[T]()
 	props := map[string]any{}
 	for i := range m.fields {
@@ -113,20 +123,63 @@ func BuildMapping[T any](shards, replicas int) map[string]any {
 		}
 		props[f.name] = mappingFor(f)
 	}
-	mapping := map[string]any{
-		"mappings": map[string]any{"properties": props},
-	}
+	mappings := map[string]any{"properties": props}
+	var settings map[string]any
 	if shards > 0 || replicas > 0 {
-		settings := map[string]any{}
+		settings = map[string]any{}
 		if shards > 0 {
 			settings["number_of_shards"] = shards
 		}
 		if replicas > 0 {
 			settings["number_of_replicas"] = replicas
 		}
-		mapping["settings"] = settings
 	}
-	return mapping
+	return mappings, settings
+}
+
+// BuildMapping 根据模型 T 推导 ES 索引 mapping（含可选 settings）。
+// 可在 type 上通过 es:"type:keyword" 等覆盖推断类型。
+// shards/replicas 用于 settings；传 0 表示沿用集群默认。
+func BuildMapping[T any](shards, replicas int) map[string]any {
+	mappings, settings := mappingAndSettings[T](shards, replicas)
+	m := map[string]any{"mappings": mappings}
+	if settings != nil {
+		m["settings"] = settings
+	}
+	return m
+}
+
+// BuildIndexTemplate 根据模型 T 推导组合式索引模板（_index_template）的请求体。
+// 调用方把返回值传给 Client.PutIndexTemplate / Repo.PutIndexTemplate 即可。
+// 模板会让所有匹配 index_patterns 的新索引自动套用本模型的 mapping/settings。
+func BuildIndexTemplate[T any](opts TemplateOptions) map[string]any {
+	mappings, settings := mappingAndSettings[T](opts.Shards, opts.Replicas)
+	tmpl := map[string]any{"mappings": mappings}
+	if settings != nil {
+		tmpl["settings"] = settings
+	}
+	if opts.Aliases != nil {
+		tmpl["aliases"] = opts.Aliases
+	}
+	priority := opts.Priority
+	if priority <= 0 {
+		priority = 100
+	}
+	body := map[string]any{
+		"index_patterns": opts.Patterns,
+		"priority":       priority,
+		"template":       tmpl,
+	}
+	if len(opts.ComposedOf) > 0 {
+		body["composed_of"] = opts.ComposedOf
+	}
+	if opts.Version > 0 {
+		body["version"] = opts.Version
+	}
+	if opts.Meta != nil {
+		body["_meta"] = opts.Meta
+	}
+	return body
 }
 
 // mappingFor 为单个字段推断 mapping。

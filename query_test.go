@@ -75,6 +75,41 @@ func TestQueryWithAggsAndTrackTotal(t *testing.T) {
 	assertJSON(t, string(qj), want)
 }
 
+func TestSearchAfterDSL(t *testing.T) {
+	price := Col[product](func(p *product) *float64 { return &p.Price })
+	name := Col[product](func(p *product) *string { return &p.Name })
+	q := NewQuery[product]().
+		Ge(price, 1000).
+		OrderBy(price, true).
+		OrderBy(name, true).
+		Size(10).
+		SearchAfter(1000.0, "Apple")
+	qj, _ := json.Marshal(q.BuildBody())
+	want := `{"query":{"bool":{"must":[{"range":{"price":{"gte":1000}}}]}},"search_after":[1000,"Apple"],"size":10,"sort":[{"price":"asc"},{"name":"asc"}]}`
+	assertJSON(t, string(qj), want)
+}
+
+func TestPITBody(t *testing.T) {
+	q := NewQuery[product]().PIT("pit-abc", "2m").Size(20)
+	qj, _ := json.Marshal(q.BuildBody())
+	want := `{"pit":{"id":"pit-abc","keep_alive":"2m"},"query":{"match_all":{}},"size":20}`
+	assertJSON(t, string(qj), want)
+}
+
+func TestPITDropsFrom(t *testing.T) {
+	q := NewQuery[product]().PIT("pit-abc", "").From(100).Size(10)
+	var body map[string]any
+	if err := json.Unmarshal([]byte(q.Build()), &body); err != nil {
+		t.Fatalf("Build 非合法 JSON: %v", err)
+	}
+	if _, ok := body["from"]; ok {
+		t.Fatalf("PIT 查询不应包含 from: %s", q.Build())
+	}
+	if _, ok := body["pit"]; !ok {
+		t.Fatalf("PIT 查询应含 pit: %s", q.Build())
+	}
+}
+
 // assertJSON 比较两个 JSON 是否语义相等（忽略 key 顺序）。
 func assertJSON(t *testing.T, got, want string) {
 	t.Helper()

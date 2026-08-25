@@ -79,3 +79,41 @@ func TestBuildMapping(t *testing.T) {
 		t.Fatalf("应设置 settings")
 	}
 }
+
+func TestBuildIndexTemplate(t *testing.T) {
+	body := BuildIndexTemplate[product](TemplateOptions{
+		Patterns: []string{"products-*"},
+		Priority: 200,
+		Shards:   2,
+		Replicas: 1,
+		Version:  1,
+		Meta:     map[string]any{"owner": "search-team"},
+	})
+	b, _ := json.Marshal(body)
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("模板非合法 JSON: %v", err)
+	}
+	if pats, ok := m["index_patterns"].([]any); !ok || len(pats) == 0 || pats[0] != "products-*" {
+		t.Fatalf("index_patterns 错误: %v", m["index_patterns"])
+	}
+	if m["priority"] != float64(200) {
+		t.Fatalf("priority 错误: %v", m["priority"])
+	}
+	tmpl, ok := m["template"].(map[string]any)
+	if !ok {
+		t.Fatalf("缺少 template: %s", b)
+	}
+	if _, ok := tmpl["mappings"].(map[string]any)["properties"]; !ok {
+		t.Fatalf("template.mappings.properties 缺失: %s", b)
+	}
+	if tmpl["settings"].(map[string]any)["number_of_shards"] != float64(2) {
+		t.Fatalf("settings.shards 错误: %s", b)
+	}
+	if m["version"] != float64(1) {
+		t.Fatalf("version 错误")
+	}
+	if m["_meta"].(map[string]any)["owner"] != "search-team" {
+		t.Fatalf("meta 错误")
+	}
+}
