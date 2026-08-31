@@ -1,54 +1,52 @@
-﻿# gobreath-es
-
-中文版本： [README.zh-CN.md](./README.zh-CN.md)
+# gobreath-es
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/wusenshan/gobreath-es.svg)](https://pkg.go.dev/github.com/wusenshan/gobreath-es)
 [![Build](https://github.com/wusenshan/gobreath-es/actions/workflows/ci.yml/badge.svg)](https://github.com/wusenshan/gobreath-es/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/go-1.23%2B-00ADD8)](https://go.dev)
 
-A Go framework for Elasticsearch that keeps the API close to Elasticsearch itself while still giving you a safe and ergonomic Go experience.
+这是一个面向 Elasticsearch 的 Go 框架，主 API 尽量贴近 Elasticsearch 自身语义，同时保留类型安全和 Go 友好的查询体验。
 
-The design goal is simple:
+设计目标：
 
-- zero raw string field names in query code
-- model-driven index mapping
-- typed, chainable query builders
-- official ES naming for the primary API
-- thin compatibility aliases for ORM-style callers
-- strong support for hybrid vector search and AI/RAG use cases
+- 查询代码里尽量不出现原始字符串字段名
+- 模型驱动的索引映射
+- 类型安全的链式查询构造器
+- 主 API 使用 ES 官方命名
+- 为 ORM / SQL 用户保留薄兼容层
+- 原生支持混合向量检索和 AI / RAG 场景
 
-## Why gobreath-es
+## 为什么选择 gobreath-es
 
-The project follows the same design philosophy as `gobreath-orm`:
+它和 `gobreath-orm` 有相同的设计哲学：
 
-- `Col[T]` picks a field from a Go struct instead of hardcoding a string
-- `Query[T]` composes ES bool queries in Go
-- `Repo[T]` binds a model to an index and exposes ES-native CRUD APIs
-- mapping is inferred from tags and model metadata
-- vector search is first-class and can be combined with normal search filters
+- `Col[T]` 从结构体中提取字段，而不是手写字符串
+- `Query[T]` 以 Go 代码拼装 ES bool 查询
+- `Repo[T]` 把模型和索引绑定在一起，提供 ES 语义的 CRUD 能力
+- mapping 能从 tag 和元数据自动推导
+- 向量搜索是一级能力，并且可与正常过滤条件混合召回
 
-This means you can work with Elasticsearch without writing brittle JSON query strings everywhere.
+这样做可以避免在项目里大量手写 JSON DSL 字符串。
 
-## Core API naming
+## 主 API 命名风格
 
-The primary API intentionally follows Elasticsearch semantics instead of forcing SQL/ORM naming onto ES.
+主 API 采用 Elasticsearch 自身的语义命名，而不是强行套 SQL / ORM 风格：
 
-| ES-native method | Meaning |
+| ES 原生方法 | 含义 |
 | --- | --- |
-| `Index` | write or upsert a document |
-| `Get` | fetch by document id |
-| `Search` | execute search |
-| `Count` | count hits |
-| `Update` | partial update by id |
-| `Delete` | delete by id |
-| `BulkIndex` / `IndexMany` | bulk write |
-| `CreateIndex` | create index / mapping |
-| `PutMapping` | create/update mapping |
-| `Nearest` | kNN vector search |
+| `Index` | 写入或覆盖单个文档 |
+| `Get` | 按文档 id 读取 |
+| `Search` | 执行查询 |
+| `Count` | 统计命中数 |
+| `Update` | 按 id 局部更新 |
+| `Delete` | 按 id 删除 |
+| `BulkIndex` / `IndexMany` | 批量写入 |
+| `CreateIndex` | 创建索引 / 映射 |
+| `PutMapping` | 创建/更新映射 |
+| `Nearest` | kNN 向量检索 |
 
-Compatibility aliases are also kept for callers coming from ORM or SQL-oriented habits:
+同时保留一个薄的兼容层，方便 SQL / ORM 风格开发者迁移：
 
-| Compatibility alias | Native equivalent |
+| 兼容别名 | 对应原生方法 |
 | --- | --- |
 | `Save` | `Index` |
 | `Insert` | `Index` |
@@ -58,15 +56,15 @@ Compatibility aliases are also kept for callers coming from ORM or SQL-oriented 
 | `IndexOne` | `Index` |
 | `IndexMany` | `BulkIndex` |
 
-This keeps the main API ES-native while preserving a smooth migration path.
+这样主线是 ES 原生语义，兼容层只是过渡方案。
 
-## Installation
+## 安装
 
 ```bash
 go get github.com/wusenshan/gobreath-es
 ```
 
-## Quick start
+## 快速开始
 
 ```go
 package main
@@ -135,37 +133,37 @@ func main() {
 }
 ```
 
-## Model metadata
+## 模型映射与元数据
 
-Fields are mapped using Go tags and ES conventions.
+字段映射依赖 Go 的 tag 以及 ES 语义：
 
 ```go
 type Product struct {
-    ID      string  `json:"id" es:"id"`
-    Title   string  `json:"title"`
-    Price   float64 `json:"price"`
-    Tags    []string `json:"tags"`
+    ID      string    `json:"id" es:"id"`
+    Title   string    `json:"title"`
+    Price   float64   `json:"price"`
+    Tags    []string  `json:"tags"`
     Embeds  []float32 `json:"embeds" es:"vector(1536)"`
-    Source  string  `json:"source" es:"type:keyword"`
+    Source  string    `json:"source" es:"type:keyword"`
 }
 ```
 
-Supported tags:
+支持的 tag：
 
-- `json:"name"` maps to the document field name
-- `es:"id"` marks the document `_id`
-- `es:"-"` ignores the field
-- `es:"type:keyword"` overrides the inferred mapping
-- `es:"vector(1536)"` creates a dense_vector field for kNN search
+- `json:"name"` 表示文档字段名
+- `es:"id"` 表示该字段作为 `_id`
+- `es:"-"` 忽略字段
+- `es:"type:keyword"` 强制映射类型
+- `es:"vector(1536)"` 创建 `dense_vector` 字段，用于 kNN 向量搜索
 
-If you do not provide an explicit index name, the framework derives a plural snake_case index name, such as:
+如果没有显式索引名，框架会按类型名推导：
 
 - `Product` -> `products`
 - `UserProfile` -> `user_profiles`
 
-## Query builder
+## Query 构造器
 
-The main query interface is `Query[T]`.
+核心查询对象是 `Query[T]`。
 
 ```go
 price := es.Col[Product](func(p *Product) *float64 { return &p.Price })
@@ -180,16 +178,16 @@ q := es.NewQuery[Product]().
     Size(20)
 ```
 
-Common conditions include:
+常见条件：
 
 - `Eq`, `Ne`, `In`
 - `Gt`, `Gte`, `Lt`, `Lte`
 - `Like`, `Exists`, `NotNull`, `Null`
 - `Or`, `If`, `Nested`, `Filter`, `Must`, `MustNot`, `Should`
 
-## Vector search
+## 向量检索
 
-Vector search is a first-class feature.
+向量搜索是框架的一等能力：
 
 ```go
 vec := []float32{0.12, 0.33, 0.99}
@@ -202,9 +200,9 @@ res, err := repo.Search(ctx, es.NewQuery[Product]().
     }))
 ```
 
-This is especially useful for AI / RAG use cases such as semantic search and hybrid recall.
+这类能力非常适合 AI / RAG / 语义搜索 / 混合召回场景。
 
-## Aggregations
+## 聚合查询
 
 ```go
 agg := es.NewAggregation().
@@ -216,9 +214,9 @@ q := es.NewQuery[Product]().Aggregate(agg)
 result, err := repo.Aggregate(ctx, q)
 ```
 
-## Compatibility with ORM-style naming
+## ORM 风格兼容层
 
-If you come from SQL or MyBatis-Plus habits, the convenience aliases are still available.
+如果你更习惯 SQL / ORM 的命名，也可以直接用兼容别名：
 
 ```go
 if err := repo.Insert(ctx, doc); err != nil {
@@ -232,38 +230,39 @@ if err := repo.UpdateByID(ctx, "id-123", map[string]any{"price": 999}); err != n
 obj, err := repo.GetByID(ctx, "id-123")
 ```
 
-The important distinction is:
+但要注意：
 
-- Native ES naming is the primary design
-- ORM-style wrappers are compatibility shims, not the main API
+- 原生 ES 命名是主 API
+- ORM 风格只是兼容层
+- 这是为了减少迁移成本，而不是为了把 ES 当成 SQL 数据库
 
-## Why not make SQL the main API?
+## 为什么不把 SQL 当主 API
 
-Elasticsearch SQL is useful for migration and ad-hoc analysis, but it is not a perfect replacement for native ES query semantics.
+Elasticsearch SQL 对迁移和临时查询确实有用，但它并不是 ES 的本质查询模型，也不能完全等价 SQL 数据库的语义。
 
-This project keeps the mainstream API in Go-native ES terms because it is:
+这个框架的主方向是：
 
-- more type-safe
-- easier to compose in Go
-- closer to actual Elasticsearch semantics
-- more natural for vector / nested / kNN / filter-heavy workloads
+- Go-native 的 ES 语义
+- 类型安全
+- 可组装的查询
+- 更自然的 AI / kNN / filter 工作流
 
-If needed later, a SQL adapter can still be added as a thin optional layer without changing the primary design.
+如果后续需要，还可以再增加一个 SQL 适配层作为辅助能力，而不是把它作为主入口。
 
-## Project status
+## 项目现状
 
-The framework already includes:
+框架已经具备：
 
-- typed field selection
-- query builder
-- repo abstraction
-- mapping generation
-- index management
-- aggregation builders
-- hybrid vector search
-- logging and request tracing
+- 类型安全字段选择
+- 查询构造器
+- Repo 抽象层
+- 映射生成
+- 索引管理
+- 聚合构造器
+- 混合向量检索
+- 日志与请求跟踪
 
-The design direction is to keep the canonical API close to Elasticsearch while retaining lightweight compatibility helpers for ORM-oriented users.
+当前路线是：在保持 ES 原生语义主线的前提下，继续强化工程能力和可观测性。
 
 ## License
 
