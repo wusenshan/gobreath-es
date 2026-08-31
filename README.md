@@ -22,6 +22,20 @@
 > 更支持与 ES 自身条件**混合召回**（向量 ∪ 关键词/过滤）——这是纯向量库（pgvector / Milvus）给不了的。
 > 完整能力、ES 向量字段类型与存储/查询示例、接入 AI 向量模型，见 [VECTOR.md](./VECTOR.md)。
 
+## 为什么是 gobreath-es（而不是官方 typed API / 其他封装）
+
+ES 生态里已经有官方 `go-elasticsearch/v8` 的 `NewTyped()` + `esdsl`、`es-typed-go`、`go-orm-es`、`effdsl` 等类型安全封装。
+`gobreath-es` **不重造一个通用 ES 客户端**——它的定位是在官方驱动之上，给两类人一套**一致的、AI 优先**的体验：
+
+1. **与 `gobreath-orm` 同一套 lambda 闭包心智**：`es.Col[T]` 与 `orm.Col[T]` 同款写法，ORM 与 ES 之间零切换成本；
+   字段名零字符串、编译期强类型，而官方 `esdsl` 与多数社区封装仍用 string 字段名、`es-typed-go` 还要先跑代码生成器。
+2. **向量检索是头等公民 + 混合召回易用封装**：`Nearest(...)` 与 `Eq(...)` 一行合并成 `knn ∪ query`（详见
+   [VECTOR.md](./VECTOR.md)）。底层能力官方驱动也能做，但 `gobreath-es` 把它做成与 ORM 同源的 API 手感，并配齐 AI 文档。
+3. **跨 ORM / ES 的 AI 文档体系**：[VECTOR.md](./VECTOR.md) 一份讲透向量概念与 embedding 模型接入，ORM 与 ES 共用。
+
+> 如果你只需要一个「标准类型安全 ES 客户端」，官方的 typed API 已经足够；
+> 如果你想要「**ORM + ES 同一套写法 + 向量检索 / 混合召回开箱即用**」，选 `gobreath-es`。
+
 底层基于官方 [`go-elasticsearch/v8`](https://github.com/elastic/go-elasticsearch)，DSL 完全由本框架构造，对 ES 7.x / 8.x 通用（kNN 顶层 `knn` 需 **ES 8.4+**）。
 
 ---
