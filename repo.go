@@ -98,6 +98,35 @@ func (r *Repo[T]) Index(ctx context.Context, doc T) error {
 	return r.cli.IndexDoc(ctx, r.index, extractID(r.meta, doc), doc)
 }
 
+// Put 是 ES-native 的文档写入入口：覆盖/写入语义，等价于 PUT /_doc/{id}。
+func (r *Repo[T]) Put(ctx context.Context, doc T) error {
+	return r.Index(ctx, doc)
+}
+
+// Save 是兼容 ORM 语义的别名：写入/保存一个文档，等价于 Index。
+func (r *Repo[T]) Save(ctx context.Context, doc T) error {
+	return r.Index(ctx, doc)
+}
+
+// Insert 是对 SQL/ORM 用户友好的兼容层，等价于 Index。
+func (r *Repo[T]) Insert(ctx context.Context, doc T) error {
+	return r.Index(ctx, doc)
+}
+
+// Create 仅在文档不存在时创建，等价于 ES 的 create 语义。
+func (r *Repo[T]) Create(ctx context.Context, doc T) error {
+	id := extractID(r.meta, doc)
+	if id == "" {
+		return fmt.Errorf("gobreath-es: create requires an id field or explicit document id")
+	}
+	return r.cli.CreateDoc(ctx, r.index, id, doc)
+}
+
+// IndexOne 与 Index 等价，是更显式的 ES-native 命名。
+func (r *Repo[T]) IndexOne(ctx context.Context, doc T) error {
+	return r.Index(ctx, doc)
+}
+
 // BulkIndex 批量写入文档。
 func (r *Repo[T]) BulkIndex(ctx context.Context, docs []T) error {
 	if len(docs) == 0 {
@@ -112,6 +141,11 @@ func (r *Repo[T]) BulkIndex(ctx context.Context, docs []T) error {
 	return r.cli.BulkIndexDocs(ctx, r.index, anyDocs, ids)
 }
 
+// IndexMany 与 BulkIndex 等价，强调 ES 的批量索引语义。
+func (r *Repo[T]) IndexMany(ctx context.Context, docs []T) error {
+	return r.BulkIndex(ctx, docs)
+}
+
 // Get 按 id 读取文档（自动回填 id 字段）。不存在返回 ErrNotFound。
 func (r *Repo[T]) Get(ctx context.Context, id string) (*T, error) {
 	var t T
@@ -120,6 +154,11 @@ func (r *Repo[T]) Get(ctx context.Context, id string) (*T, error) {
 	}
 	setID(r.meta, &t, id)
 	return &t, nil
+}
+
+// GetByID 是更显式的 ES/native 读取入口，等价于 Get。
+func (r *Repo[T]) GetByID(ctx context.Context, id string) (*T, error) {
+	return r.Get(ctx, id)
 }
 
 // Exists 判断文档是否存在。
@@ -132,9 +171,19 @@ func (r *Repo[T]) Delete(ctx context.Context, id string) error {
 	return r.cli.DeleteDoc(ctx, r.index, id)
 }
 
+// DeleteByID 与 Delete 等价，强调 ES 原生删除语义。
+func (r *Repo[T]) DeleteByID(ctx context.Context, id string) error {
+	return r.Delete(ctx, id)
+}
+
 // Update 按 id 局部更新（partial 可为 map 或结构体，仅其非空字段参与更新）。
 func (r *Repo[T]) Update(ctx context.Context, id string, partial any) error {
 	return r.cli.UpdateDoc(ctx, r.index, id, partial)
+}
+
+// UpdateByID 与 Update 等价，强调显式 ID 参数。
+func (r *Repo[T]) UpdateByID(ctx context.Context, id string, partial any) error {
+	return r.Update(ctx, id, partial)
 }
 
 // Search 执行检索，返回泛型结果（含文档列表、相似度得分与聚合）。

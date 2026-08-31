@@ -43,6 +43,27 @@ func (c *Client) IndexDoc(ctx context.Context, index string, id string, doc any)
 	return nil
 }
 
+// PutDoc 上传/覆盖单个文档，等价于 ES 的 PUT /_doc/{id} 语义。
+func (c *Client) PutDoc(ctx context.Context, index string, id string, doc any) error {
+	return c.IndexDoc(ctx, index, id, doc)
+}
+
+// CreateDoc 仅在文档不存在时创建，等价于 ES 的 POST /_create/{id}。
+func (c *Client) CreateDoc(ctx context.Context, index string, id string, doc any) error {
+	if id == "" {
+		return fmt.Errorf("gobreath-es: create requires a document id")
+	}
+	body, err := json.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("gobreath-es: 序列化文档失败: %w", err)
+	}
+	res, err := c.doLog("POST", index+"/_create/"+id, body, func() (*esapi.Response, error) {
+		return c.Client.Create(index, id, bytes.NewReader(body), c.Client.Create.WithContext(ctx))
+	})
+	_, err = decodeResponse(res, err)
+	return err
+}
+
 // BulkIndexDocs 批量写入文档（NDJSON _bulk）。ids 与 docs 一一对应，ids[i] 为空则自动生成。
 func (c *Client) BulkIndexDocs(ctx context.Context, index string, docs []any, ids []string) error {
 	if len(docs) == 0 {
