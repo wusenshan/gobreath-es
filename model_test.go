@@ -120,6 +120,12 @@ func TestBuildMappingVector(t *testing.T) {
 	if emb["dims"] != float64(1536) {
 		t.Fatalf("embedding dims 期望 1536，实际 %v", emb["dims"])
 	}
+	if emb["index"] != true {
+		t.Fatalf("embedding 期望开启 index（kNN 必需），实际 %v", emb["index"])
+	}
+	if emb["similarity"] != "cosine" {
+		t.Fatalf("embedding similarity 期望 cosine（默认），实际 %v", emb["similarity"])
+	}
 }
 
 func TestBuildIndexTemplate(t *testing.T) {

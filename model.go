@@ -18,6 +18,7 @@ type fieldInfo struct {
 	esType string       // 显式指定的 ES 类型（es tag 含 "type:keyword" 等），为空则自动推断
 	vector bool         // 是否为向量字段（es tag 含 "vector(N)"）
 	vectorDim int       // 向量维度（es:"vector(N)" 中的 N；0 表示未显式声明，兜底 1536）
+	vectorSim string    // 向量相似度（kNN 必需）：cosine / l2 / dot / max_inner；空则默认 cosine
 }
 
 // modelMeta 文档模型的元数据（字段、索引名、id 字段）。
@@ -67,12 +68,14 @@ func parseMeta(typ reflect.Type) *modelMeta {
 				m.idField = &fi
 			case strings.HasPrefix(opt, "type:"):
 				fi.esType = strings.TrimPrefix(opt, "type:")
-			case strings.HasPrefix(opt, "vector"):
-				fi.vector = true
-				if n := parseVectorDim(opt); n > 0 {
-					fi.vectorDim = n
-				}
+		case strings.HasPrefix(opt, "vector"):
+			fi.vector = true
+			if n := parseVectorDim(opt); n > 0 {
+				fi.vectorDim = n
 			}
+		case strings.HasPrefix(opt, "sim:"):
+			fi.vectorSim = strings.TrimPrefix(opt, "sim:")
+		}
 		}
 		m.fields = append(m.fields, fi)
 	}
@@ -192,13 +195,24 @@ func BuildIndexTemplate[T any](opts TemplateOptions) map[string]any {
 
 // mappingFor 为单个字段推断 mapping。
 func mappingFor(f fieldInfo) map[string]any {
-	// 向量字段：dense_vector 必须显式声明维度，优先于 esType。
+	// 向量字段：dense_vector 做 kNN 检索必须在 mapping 里声明 similarity + index。
+	// 否则运行期 kNN 会报错（Field [...] doesn't support kNN search because it
+	// doesn't have a [similarity]）；默认 cosine，可用 es:"sim:l2" 等覆盖。
 	if f.vector {
 		dim := f.vectorDim
 		if dim == 0 {
 			dim = 1536 // 未显式声明维度时的兜底；建议用 es:"vector(N)" 显式指定以对齐模型维度
 		}
-		return map[string]any{"type": "dense_vector", "dims": dim}
+		sim := f.vectorSim
+		if sim == "" {
+			sim = "cosine"
+		}
+		return map[string]any{
+			"type":      "dense_vector",
+			"dims":      dim,
+			"index":     true,
+			"similarity": sim,
+		}
 	}
 	if f.esType != "" {
 		return map[string]any{"type": f.esType}

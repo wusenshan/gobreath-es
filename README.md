@@ -17,7 +17,12 @@
 - **向量检索（AI 原生）**：`es:"vector(N)"` 声明 `dense_vector` 字段，`Nearest` 做 kNN 近邻；
   更支持与 ES 自身条件**混合召回**（向量 ∪ 关键词/过滤），这是纯向量库给不了的。
 
-底层基于官方 [`go-elasticsearch/v8`](https://github.com/elastic/go-elasticsearch)，DSL 完全由本框架构造，对 ES 7.x / 8.x 通用。
+> 🤖 **为 AI / RAG 而生**：只要你的业务要做「知识库问答 / 语义搜索 / 相似推荐 / 文本去重」，
+> 第一步就是把文本变成向量存进 ES 再近邻检索。`gobreath-es` 把这一步做成一行 `Nearest(...)`，
+> 更支持与 ES 自身条件**混合召回**（向量 ∪ 关键词/过滤）——这是纯向量库（pgvector / Milvus）给不了的。
+> 完整能力、ES 向量字段类型与存储/查询示例、接入 AI 向量模型，见 [VECTOR.md](./VECTOR.md)。
+
+底层基于官方 [`go-elasticsearch/v8`](https://github.com/elastic/go-elasticsearch)，DSL 完全由本框架构造，对 ES 7.x / 8.x 通用（kNN 顶层 `knn` 需 **ES 8.4+**）。
 
 ---
 
@@ -260,13 +265,18 @@ result, _ := repo.Aggregate(ctx, es.NewQuery[Product]().Aggregate(aggs))
 
 ## 向量检索（AI 原生）
 
+> 完整能力、ES 向量字段类型（`dense_vector` / `similarity` / `element_type` / HNSW）、存储与查询示例、
+> 接入 AI 向量模型，见 [**VECTOR.md**](./VECTOR.md)。向量概念与 embedding 模型接入（OpenAI / Ollama）
+> 与具体存储无关，[`gobreath-orm` 的 VECTOR.md 讲得更系统](https://github.com/wusenshan/gobreath-orm/blob/main/VECTOR.md)，优先读那篇。
+
 gobreath-es 内置向量近邻检索（kNN），与 ORM 的 `Nearest/WithinDistance` 同源，但 ES 的 kNN
 **天然支持与 ES 自身检索混合召回**——一个请求里 `knn` 与 `query` 同时生效。这是纯向量库
 （pgvector / Milvus）给不了的：你既能做「语义近邻」，又能用 ES 的 term/range/bool 做
 「关键词 + 过滤」精确约束，二者在检索阶段就合并，召回质量与可控性都更强。
 
 > 依赖 **Elasticsearch 8.4+**（顶层 `knn` 参数）。向量字段用 `es:"vector(N)"` 声明
-> （`N` 为维度），框架在 `CreateIndex` 时自动生成 `dense_vector` mapping。
+> （`N` 为维度），框架在 `CreateIndex` 时自动生成带 `similarity`（默认 `cosine`）+ `index` 的
+> `dense_vector` mapping——不显式声明 similarity 时 ES 会拒绝 kNN，所以这一步由框架兜底。
 
 ### 1. 声明向量字段
 
@@ -489,5 +499,6 @@ gobreath-es/
 ├── search.go       # SearchResult[T]
 ├── errors.go       # ErrNotFound 等
 ├── *_test.go       # 构造器/映射/聚合 DSL 单测（无需真实 ES）
+├── VECTOR.md       # 向量检索专文档（dense_vector / 混合召回 / 接入 AI 模型）
 └── example/        # 可运行示例
 ```
