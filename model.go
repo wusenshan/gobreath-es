@@ -2,6 +2,7 @@ package es
 
 import (
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,8 @@ type fieldInfo struct {
 	id     bool         // 是否为文档 _id 来源字段（es tag 含 "id"）
 	ignore bool         // 是否忽略（json:"-" 或 es:"-"）
 	esType string       // 显式指定的 ES 类型（es tag 含 "type:keyword" 等），为空则自动推断
+	vector bool         // 是否为向量字段（es tag 含 "vector(N)"）
+	vectorDim int       // 向量维度（es:"vector(N)" 中的 N；0 表示未显式声明，兜底 1536）
 }
 
 // modelMeta 文档模型的元数据（字段、索引名、id 字段）。
@@ -64,6 +67,11 @@ func parseMeta(typ reflect.Type) *modelMeta {
 				m.idField = &fi
 			case strings.HasPrefix(opt, "type:"):
 				fi.esType = strings.TrimPrefix(opt, "type:")
+			case strings.HasPrefix(opt, "vector"):
+				fi.vector = true
+				if n := parseVectorDim(opt); n > 0 {
+					fi.vectorDim = n
+				}
 			}
 		}
 		m.fields = append(m.fields, fi)
@@ -184,6 +192,14 @@ func BuildIndexTemplate[T any](opts TemplateOptions) map[string]any {
 
 // mappingFor 为单个字段推断 mapping。
 func mappingFor(f fieldInfo) map[string]any {
+	// 向量字段：dense_vector 必须显式声明维度，优先于 esType。
+	if f.vector {
+		dim := f.vectorDim
+		if dim == 0 {
+			dim = 1536 // 未显式声明维度时的兜底；建议用 es:"vector(N)" 显式指定以对齐模型维度
+		}
+		return map[string]any{"type": "dense_vector", "dims": dim}
+	}
 	if f.esType != "" {
 		return map[string]any{"type": f.esType}
 	}
@@ -191,6 +207,24 @@ func mappingFor(f fieldInfo) map[string]any {
 		return map[string]any{"type": "object"}
 	}
 	return inferMapping(f.typ)
+}
+
+// parseVectorDim 从 "vector(1536)" / "vector(384)" 中解析维度 N；无括号或非数字返回 0。
+func parseVectorDim(seg string) int {
+	// seg 形如 "vector(1536)"
+	if !strings.HasSuffix(seg, ")") {
+		return 0
+	}
+	open := strings.Index(seg, "(")
+	if open < 0 {
+		return 0
+	}
+	inner := seg[open+1 : len(seg)-1]
+	n, err := strconv.Atoi(strings.TrimSpace(inner))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
 }
 
 // inferMapping 根据 Go 类型递归推断 ES mapping。

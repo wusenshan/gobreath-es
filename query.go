@@ -36,6 +36,19 @@ type Query[T any] struct {
 	searchAfter []any        // search_after 游标（深分页）
 	pitID       string       // Point In Time id（一致性翻页，与 SearchAfter 配合）
 	pitKeep     string       // PIT keep_alive
+	knn         *knnQuery[T] // 向量近邻检索（与 ES 自身 query 可同时生效，形成混合召回）
+}
+
+// knnQuery 向量近邻检索参数，渲染为 ES 顶层 "knn" 子句。
+// field 为目标 dense_vector 字段；vector 为查询向量；k 为返回近邻数；
+// numCandidates 为每分片候选数（ES 要求，未设置时取 k*10 且不少于 50）；
+// filter 为 in-knn 预过滤（hybrid 预过滤模式：仅在该 filter 命中的文档里找近邻）。
+type knnQuery[T any] struct {
+	field         ColExpr
+	vector        []float32
+	k             int
+	numCandidates int
+	filter        *Query[T]
 }
 
 // NewQuery 创建针对类型 T 对应索引的查询构造器。
@@ -134,6 +147,73 @@ func (q *Query[T]) Nested(path string, fn func(*Query[T])) *Query[T] {
 		},
 	})
 	return q
+}
+
+// ---- 向量检索（kNN）----
+
+// Nearest 发起向量近邻检索：在 field（须为 dense_vector 字段）上，以 vec 为查询向量，
+// 召回最相似的 k 个文档。底层渲染为 ES 顶层 "knn" 子句。
+//
+// 与 ORM 的 Nearest/WithinDistance 同名，但 ES 的 kNN 天然支持与 ES 自身检索混合：
+//   - 在调用 Nearest 的同时用 Eq/Range/Must 等设置条件，最终请求同时含 query 与 knn，
+//     ES 会把「满足 query 的文档」与「k 近邻」合并召回（ES 8.4+ 原生混合检索）。
+//   - 也可用 KnnFilter(fn) 设置 in-knn 预过滤（仅在 filter 命中的文档里找近邻），更适合
+//     "向量 + 强条件" 的高精度召回场景。
+//
+// 用法：
+//
+//	q.Nearest(es.ColOf[Doc]("Embedding"), vec, 10)
+//	  .KnnNumCandidates(100)            // 可选：每分片候选数
+//	  .KnnFilter(func(q *es.Query[Doc]) { // 可选：in-knn 预过滤（混合召回）
+//	      q.Eq(es.ColOf[Doc]("Category"), "book")
+//	  })
+func (q *Query[T]) Nearest(col ColExpr, vec []float32, k int) *Query[T] {
+	q.knn = &knnQuery[T]{field: col, vector: vec, k: k}
+	return q
+}
+
+// KnnNumCandidates 设置每分片候选数（ES 要求，影响召回质量与性能）。未设置时取 k*10（不少于 50）。
+// 须在 Nearest 之后调用。
+func (q *Query[T]) KnnNumCandidates(n int) *Query[T] {
+	if q.knn == nil {
+		q.knn = &knnQuery[T]{}
+	}
+	q.knn.numCandidates = n
+	return q
+}
+
+// KnnFilter 设置 in-knn 预过滤（hybrid 预过滤）：仅在 fn 描述的文档集合内检索近邻。
+// 这是「向量检索 + ES 条件过滤」的精准形态，区别于顶层 query+knn 的「合并召回」。
+// 须在 Nearest 之后调用。
+func (q *Query[T]) KnnFilter(fn func(*Query[T])) *Query[T] {
+	if q.knn == nil {
+		q.knn = &knnQuery[T]{}
+	}
+	sub := NewQuery[T]()
+	fn(sub)
+	q.knn.filter = sub
+	return q
+}
+
+// toMap 渲染 knn 子句。
+func (k *knnQuery[T]) toMap() map[string]any {
+	nc := k.numCandidates
+	if nc <= 0 {
+		nc = k.k * 10
+		if nc < 50 {
+			nc = 50
+		}
+	}
+	m := map[string]any{
+		"field":         k.field.name,
+		"query_vector":  k.vector,
+		"k":             k.k,
+		"num_candidates": nc,
+	}
+	if k.filter != nil {
+		m["filter"] = k.filter.BuildQuery()
+	}
+	return m
 }
 
 // ---- 叶子条件 ----
@@ -378,10 +458,25 @@ func renderGroups(groups [][]leaf) []any {
 	return clauses
 }
 
+// isEmptyMatchAll 判断查询是否为空的 match_all（即未设置任何条件）。
+func isEmptyMatchAll(q map[string]any) bool {
+	if m, ok := q["match_all"]; ok {
+		if mm, ok := m.(map[string]any); ok && len(mm) == 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // BuildBody 产出完整的 _search 请求体（query + sort + from + size + _source + aggs + track_total_hits + highlight）。
 func (q *Query[T]) BuildBody() map[string]any {
 	body := map[string]any{}
-	body["query"] = q.BuildQuery()
+	qb := q.BuildQuery()
+	// 当只做向量检索（无其它查询条件）时，不输出无意义的 match_all，保持请求干净；
+	// 一旦同时设置了 bool 条件，query 与 knn 并存即形成 ES 原生混合召回。
+	if q.knn == nil || !isEmptyMatchAll(qb) {
+		body["query"] = qb
+	}
 
 	if len(q.orders) > 0 {
 		sorts := make([]any, 0, len(q.orders))
@@ -422,6 +517,10 @@ func (q *Query[T]) BuildBody() map[string]any {
 			fields[f] = map[string]any{}
 		}
 		body["highlight"] = map[string]any{"fields": fields}
+	}
+	// 向量近邻检索：顶层 knn 子句。与上面的 query 同时存在即形成 ES 原生混合召回。
+	if q.knn != nil {
+		body["knn"] = q.knn.toMap()
 	}
 	return body
 }

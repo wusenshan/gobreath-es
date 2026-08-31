@@ -21,6 +21,7 @@ type Product struct {
 	Tags      []string  `json:"tags"`
 	InStock   bool      `json:"in_stock"`
 	CreatedAt time.Time `json:"created_at"`
+	Embedding []float32 `json:"embedding" es:"vector(3)"` // 商品向量（demo 用 3 维；生产用 1536 等真实维度）
 }
 
 func main() {
@@ -33,6 +34,7 @@ func main() {
 		fmt.Println("\n本示例演示的 API（无需 ES 即可阅读）：")
 		demoAPISurface()
 		demoDSL()
+		demoVectorSearch()
 		return
 	}
 
@@ -68,9 +70,9 @@ func main() {
 	// 2) 批量写入
 	now := time.Now()
 	docs := []Product{
-		{ID: "p1", Name: "iPhone 15", Price: 5999, CatID: 1, Tags: []string{"phone", "apple"}, InStock: true, CreatedAt: now},
-		{ID: "p2", Name: "MacBook Pro", Price: 14999, CatID: 1, Tags: []string{"laptop", "apple"}, InStock: true, CreatedAt: now},
-		{ID: "p3", Name: "AirPods", Price: 999, CatID: 2, Tags: []string{"audio"}, InStock: false, CreatedAt: now},
+		{ID: "p1", Name: "iPhone 15", Price: 5999, CatID: 1, Tags: []string{"phone", "apple"}, InStock: true, CreatedAt: now, Embedding: []float32{0.9, 0.1, 0.2}},
+		{ID: "p2", Name: "MacBook Pro", Price: 14999, CatID: 1, Tags: []string{"laptop", "apple"}, InStock: true, CreatedAt: now, Embedding: []float32{0.8, 0.2, 0.1}},
+		{ID: "p3", Name: "AirPods", Price: 999, CatID: 2, Tags: []string{"audio"}, InStock: false, CreatedAt: now, Embedding: []float32{0.1, 0.9, 0.8}},
 	}
 	if err := repo.BulkIndex(ctx, docs); err != nil {
 		log.Fatalf("批量写入失败: %v", err)
@@ -121,6 +123,32 @@ func main() {
 		log.Fatalf("删除失败: %v", err)
 	}
 	fmt.Println("✓ 已删除 p3")
+
+	// 6) 向量检索（AI 原生）：在 embedding 字段上做 kNN 近邻召回
+	emb := es.ColOf[Product]("Embedding")
+	qVec := []float32{0.85, 0.15, 0.2} // 假设是某次 embedding 模型产出的查询向量
+
+	// 6a) 纯向量近邻
+	knnRes, err := repo.Search(ctx, es.NewQuery[Product]().Nearest(emb, qVec, 3))
+	if err != nil {
+		log.Fatalf("向量检索失败: %v", err)
+	}
+	fmt.Printf("== 向量近邻命中 %d 条:\n", len(knnRes.Hits))
+	for i, p := range knnRes.Hits {
+		fmt.Printf("  - %s  score=%.4f\n", p.Name, knnRes.Scores[i])
+	}
+
+	// 6b) 混合召回：向量近邻 + ES 自身条件（仅 cat_id=1 的近邻）
+	hybridRes, err := repo.Search(ctx, es.NewQuery[Product]().
+		Eq(es.ColOf[Product]("CatID"), int64(1)).
+		Nearest(emb, qVec, 3))
+	if err != nil {
+		log.Fatalf("混合检索失败: %v", err)
+	}
+	fmt.Printf("== 混合召回（cat_id=1 的近邻）命中 %d 条:\n", len(hybridRes.Hits))
+	for i, p := range hybridRes.Hits {
+		fmt.Printf("  - %s  cat=%d  score=%.4f\n", p.Name, p.CatID, hybridRes.Scores[i])
+	}
 }
 
 // demoAPISurface 在缺少 ES 时，打印本框架暴露的核心 API 形状，便于离线阅读。
@@ -133,6 +161,12 @@ func demoAPISurface() {
 	fmt.Println("  repo.Search(ctx, es.NewQuery[Product]().Eq(Col, v).Ge(Col, n).OrderBy(Col, false).Size(n))")
 	fmt.Println("  repo.Count(ctx, q) / repo.Aggregate(ctx, q)")
 	fmt.Println("  es.NewAggregation().Terms(...).Avg(...)")
+	fmt.Println("  es.ColOf[Product](\"Name\") // 短写法，免去手写字段指针闭包（等价于 Col 闭包）")
+	fmt.Println("  -- 向量检索 / AI 原生（依赖 ES 8.4+，字段须 es:\"vector(N)\"） --")
+	fmt.Println("  repo.Search(ctx, es.NewQuery[Product]().Nearest(embCol, queryVec, 10)) // 纯向量近邻")
+	fmt.Println("  repo.Search(ctx, es.NewQuery[Product]().Eq(catCol,1).Nearest(embCol, queryVec, 10)) // 向量 + ES 条件混合召回")
+	fmt.Println("  repo.Search(ctx, es.NewQuery[Product]().Nearest(embCol, queryVec, 10).KnnFilter(fn)) // in-knn 预过滤（hybrid 精准形态）")
+	fmt.Println("  res.Scores // 与 Hits 对齐的 _score（向量相似度），可排序/截断")
 	fmt.Println("  client.WithLogger(es.NewStdLogger()) // 开启请求日志(可接 slog/zap)，打印每次请求的 DSL/状态码/耗时")
 	fmt.Println("  -- 突破 10000 上限 --")
 	fmt.Println("  pitID, _ := repo.OpenPIT(ctx, \"1m\")")
@@ -177,4 +211,25 @@ func demoDSL() {
 		Meta:     map[string]any{"owner": "demo"},
 	})
 	fmt.Println("  " + mustJSON(tmpl))
+}
+
+// demoVectorSearch 在缺少 ES 时，直接打印向量检索相关 DSL，便于离线核对结构。
+func demoVectorSearch() {
+	emb := es.ColOf[Product]("Embedding")
+	cat := es.ColOf[Product]("CatID")
+	vec := []float32{0.85, 0.15, 0.2}
+
+	fmt.Println("\n[demo] 纯向量近邻（kNN）DSL:")
+	knn := es.NewQuery[Product]().Nearest(emb, vec, 10)
+	fmt.Println("  " + knn.Build())
+
+	fmt.Println("[demo] 向量 + ES 条件「混合召回」DSL（query 与 knn 并存）:")
+	hybrid := es.NewQuery[Product]().Eq(cat, int64(1)).Nearest(emb, vec, 10)
+	fmt.Println("  " + hybrid.Build())
+
+	fmt.Println("[demo] in-knn 预过滤（hybrid 精准形态：仅 cat_id=1 内找近邻）DSL:")
+	prefilter := es.NewQuery[Product]().
+		Nearest(emb, vec, 10).
+		KnnFilter(func(q *es.Query[Product]) { q.Eq(cat, int64(1)) })
+	fmt.Println("  " + prefilter.Build())
 }

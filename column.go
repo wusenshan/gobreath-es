@@ -4,6 +4,7 @@
 package es
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 )
@@ -22,8 +23,40 @@ type ColExpr struct {
 // 字段名解析优先级：json tag > es tag > 蛇形命名（字段名）。由于 ES 文档本质是 JSON，
 // 以 json tag 作为字段名能保证「查询条件」与「文档序列化」完全一致，无需自定义编解码。
 // 写错字段会在编译期（类型不对）或运行期（tag 拼错）立刻暴露，而不是生成一条错误查询。
+//
+// 若不想写闭包，可用更简短的 ColOf[T](字段名) 取字段表达式（详见 ColOf）。
 func Col[T any, F any](picker func(*T) *F) ColExpr {
 	return ColExpr{name: resolveColumn(picker)}
+}
+
+// ColOf 按结构体字段名直接取字段表达式，免去手写字段指针闭包，调用点更短。
+//
+// 用法：
+//
+//	es.ColOf[Product]("Name")   // 等价于上面的 Col 闭包，但无需 func 包裹
+//
+// 匹配优先级：Go 字段名（大小写敏感）> ES 字段名（json/es tag 或蛇形命名）。
+// 适用于不想写闭包、或结合代码生成（反射批量构造条件）的场景；未匹配会 panic，
+// 提示字段不存在。注意：与 Col 闭包相比，ColOf 的字段名是字符串，仅运行期校验
+// （字段改名时不会编译报错），需要更强编译期保障时仍用 Col 闭包。
+func ColOf[T any](fieldName string) ColExpr {
+	m := getMeta[T]()
+	for i := range m.fields {
+		if m.fields[i].goName == fieldName {
+			return ColExpr{name: m.fields[i].name}
+		}
+	}
+	for i := range m.fields {
+		if m.fields[i].name == fieldName {
+			return ColExpr{name: m.fields[i].name}
+		}
+	}
+	panic(fmt.Sprintf("es: 类型 %s 中不存在字段 %q", typeName[T](), fieldName))
+}
+
+// typeName 返回类型 T 的 Go 类型名（用于错误信息）。
+func typeName[T any]() string {
+	return reflect.TypeOf((*T)(nil)).Elem().Name()
 }
 
 // resolveColumn 用反射从 picker 闭包反查其指向的结构体字段，读出字段名。

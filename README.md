@@ -14,6 +14,8 @@
 - **参数化防注入**：查询条件全部以 DSL 结构传递，没有字符串拼接 SQL 那种注入面。
 - **查询构造器产出标准 ES DSL**：`NewQuery[T]()` 链式拼条件，最后 `BuildBody()` 生成符合 ES 约定的请求体。
 - **泛型仓储 `Repo[T]`**：把模型、索引、CRUD、聚合、检索绑定到一处，调用点无需重复写索引名与类型参数。
+- **向量检索（AI 原生）**：`es:"vector(N)"` 声明 `dense_vector` 字段，`Nearest` 做 kNN 近邻；
+  更支持与 ES 自身条件**混合召回**（向量 ∪ 关键词/过滤），这是纯向量库给不了的。
 
 底层基于官方 [`go-elasticsearch/v8`](https://github.com/elastic/go-elasticsearch)，DSL 完全由本框架构造，对 ES 7.x / 8.x 通用。
 
@@ -77,6 +79,7 @@ client = client.WithLogLevel(es.LevelError)
 | `es:"id"` | 该字段作为文档 `_id` 来源（写入时作为 `_id`，读取时回填） |
 | `es:"-"` | 忽略该字段（不索引、不查询） |
 | `es:"type:keyword"` | 显式指定 mapping 类型，覆盖自动推断 |
+| `es:"vector(N)"` | 向量字段：`dense_vector` 类型，`N` 为维度（如 `es:"vector(1536)"`）；写入 `[]float32`，用于向量检索 |
 | `json:"-"` | 同时被框架视为忽略 |
 
 索引名默认取类型名的复数蛇形（如 `Product` → `products`），实现 `IndexName() string` 接口可显式指定。
@@ -252,6 +255,74 @@ aggs.Add(byCat)
 result, _ := repo.Aggregate(ctx, es.NewQuery[Product]().Aggregate(aggs))
 // result 即 ES 返回的 "aggregations" 对象
 ```
+
+---
+
+## 向量检索（AI 原生）
+
+gobreath-es 内置向量近邻检索（kNN），与 ORM 的 `Nearest/WithinDistance` 同源，但 ES 的 kNN
+**天然支持与 ES 自身检索混合召回**——一个请求里 `knn` 与 `query` 同时生效。这是纯向量库
+（pgvector / Milvus）给不了的：你既能做「语义近邻」，又能用 ES 的 term/range/bool 做
+「关键词 + 过滤」精确约束，二者在检索阶段就合并，召回质量与可控性都更强。
+
+> 依赖 **Elasticsearch 8.4+**（顶层 `knn` 参数）。向量字段用 `es:"vector(N)"` 声明
+> （`N` 为维度），框架在 `CreateIndex` 时自动生成 `dense_vector` mapping。
+
+### 1. 声明向量字段
+
+```go
+type Product struct {
+    ID        string    `json:"id" es:"id"`
+    Name      string    `json:"name"`
+    Embedding []float32 `json:"embedding" es:"vector(1536)"` // 1536 维向量；生产对齐你的 embedding 模型维度
+}
+```
+
+建索引时 `dense_vector` 自动就位：
+
+```go
+repo := es.NewRepo[Product](client)
+repo.CreateIndex(ctx, 1, 1) // mapping 里 embedding 会是 {"type":"dense_vector","dims":1536}
+```
+
+### 2. 纯向量近邻
+
+```go
+emb := es.ColOf[Product]("Embedding")     // 短写法，等价于 Col 闭包
+vec := []float32{/* 1536 维查询向量，来自 embedding 模型 */}
+
+res, err := repo.Search(ctx, es.NewQuery[Product]().Nearest(emb, vec, 10)) // 召回最相似的 10 条
+for i, p := range res.Hits {
+    fmt.Printf("%s  score=%.4f\n", p.Name, res.Scores[i]) // Scores 是与 Hits 对齐的相似度得分
+}
+```
+
+### 3. 混合召回：向量 + ES 自身条件
+
+同时设置 `Eq/Range/Must` 等条件与 `Nearest`，最终请求**同时含 `query` 与 `knn`**，
+ES 把「满足条件」与「k 近邻」合并召回：
+
+```go
+res, err := repo.Search(ctx, es.NewQuery[Product]().
+    Eq(es.ColOf[Product]("CatID"), int64(1)). // 只在 cat_id=1 的类目里
+    Nearest(emb, vec, 10))                    // 找向量近邻
+```
+
+### 4. in-knn 预过滤（hybrid 的精准形态）
+
+`KnnFilter` 把条件作为 **in-knn 预过滤**：仅在 filter 命中的文档里检索近邻
+（区别于上面的「合并召回」，这里条件会缩小候选集，精度更高、候选更少）：
+
+```go
+res, err := repo.Search(ctx, es.NewQuery[Product]().
+    Nearest(emb, vec, 10).
+    KnnFilter(func(q *es.Query[Product]) {
+        q.Eq(es.ColOf[Product]("CatID"), int64(1))
+    }))
+```
+
+`num_candidates`（每分片候选数，影响召回质量）未设置时取 `max(k*10, 50)`，
+可用 `KnnNumCandidates(n)` 显式指定。
 
 ---
 

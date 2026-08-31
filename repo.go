@@ -137,17 +137,17 @@ func (r *Repo[T]) Update(ctx context.Context, id string, partial any) error {
 	return r.cli.UpdateDoc(ctx, r.index, id, partial)
 }
 
-// Search 执行检索，返回泛型结果（含文档列表与聚合）。
+// Search 执行检索，返回泛型结果（含文档列表、相似度得分与聚合）。
 func (r *Repo[T]) Search(ctx context.Context, q *Query[T]) (*SearchResult[T], error) {
 	raw, hits, total, took, err := r.cli.searchRaw(ctx, r.index, q.BuildBody(), q.HasPIT())
 	if err != nil {
 		return nil, err
 	}
-	docs, err := unmarshalHits[T](hits)
+	docs, scores, err := unmarshalHits[T](hits)
 	if err != nil {
 		return nil, err
 	}
-	return &SearchResult[T]{Total: total, Took: took, Hits: docs, Raw: raw}, nil
+	return &SearchResult[T]{Total: total, Took: took, Hits: docs, Scores: scores, Raw: raw}, nil
 }
 
 // Count 统计满足查询条件的文档数。

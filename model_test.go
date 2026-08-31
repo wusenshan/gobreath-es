@@ -14,6 +14,7 @@ type product struct {
 	Tags      []string  `json:"tags"`
 	InStock   bool      `json:"in_stock"`
 	CreatedAt time.Time `json:"created_at"`
+	Embedding []float32 `json:"embedding" es:"vector(1536)"`
 	Secret    string    `json:"-" es:"-"`
 }
 
@@ -40,6 +41,28 @@ func TestColResolution(t *testing.T) {
 	if got := Col[product](func(p *product) *float64 { return &p.Price }).name; got != "price" {
 		t.Fatalf("Col(Price) 应为 price，实际 %q", got)
 	}
+}
+
+// TestColOf 验证 ColOf[T](字段名) 与 Col 闭包等价，且调用点更短。
+func TestColOf(t *testing.T) {
+	if got := ColOf[product]("Name").name; got != "name" {
+		t.Fatalf("ColOf(Name) 应为 name，实际 %q", got)
+	}
+	// 也接受直接传 ES 字段名
+	if got := ColOf[product]("price").name; got != "price" {
+		t.Fatalf("ColOf(price) 应为 price，实际 %q", got)
+	}
+	// 与闭包结果一致
+	if ColOf[product]("CatID").name != Col[product](func(p *product) *int64 { return &p.CatID }).name {
+		t.Fatalf("ColOf 与 Col 解析结果应一致")
+	}
+	// 不存在的字段应 panic
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatalf("ColOf 不存在字段时应 panic")
+		}
+	}()
+	_ = ColOf[product]("NoSuchField")
 }
 
 func TestBuildMapping(t *testing.T) {
@@ -77,6 +100,25 @@ func TestBuildMapping(t *testing.T) {
 	}
 	if m2["settings"] == nil {
 		t.Fatalf("应设置 settings")
+	}
+}
+
+// TestBuildMappingVector 验证 es:"vector(N)" 字段生成 dense_vector mapping。
+func TestBuildMappingVector(t *testing.T) {
+	m := BuildMapping[product](0, 0)
+	b, _ := json.Marshal(m)
+	var m2 map[string]any
+	_ = json.Unmarshal(b, &m2)
+	props := m2["mappings"].(map[string]any)["properties"].(map[string]any)
+	emb, ok := props["embedding"].(map[string]any)
+	if !ok {
+		t.Fatalf("embedding 字段缺失: %s", b)
+	}
+	if emb["type"] != "dense_vector" {
+		t.Fatalf("embedding 期望 dense_vector，实际 %v", emb["type"])
+	}
+	if emb["dims"] != float64(1536) {
+		t.Fatalf("embedding dims 期望 1536，实际 %v", emb["dims"])
 	}
 }
 

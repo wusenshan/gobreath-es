@@ -110,6 +110,43 @@ func TestPITDropsFrom(t *testing.T) {
 	}
 }
 
+func TestQueryKNN(t *testing.T) {
+	vec := []float32{0.1, 0.2, 0.3}
+	q := NewQuery[product]().Nearest(ColOf[product]("Embedding"), vec, 5)
+	qj, _ := json.Marshal(q.BuildBody())
+	// 仅向量检索时不输出 match_all；num_candidates 默认取 k*10=50
+	want := `{"knn":{"field":"embedding","k":5,"num_candidates":50,"query_vector":[0.1,0.2,0.3]}}`
+	assertJSON(t, string(qj), want)
+}
+
+// TestQueryKNNWithQueryHybrid 验证向量 + ES 自身条件可同时生效（顶层 query 与 knn 并存）。
+func TestQueryKNNWithQueryHybrid(t *testing.T) {
+	vec := []float32{0.1, 0.2}
+	cat := ColOf[product]("CatID")
+	q := NewQuery[product]().
+		Ge(ColOf[product]("Price"), 10).
+		Nearest(ColOf[product]("Embedding"), vec, 3)
+	qj, _ := json.Marshal(q.BuildBody())
+	want := `{"knn":{"field":"embedding","k":3,"num_candidates":50,"query_vector":[0.1,0.2]},"query":{"bool":{"must":[{"range":{"price":{"gte":10}}}]}}}`
+	assertJSON(t, string(qj), want)
+	// 用 KnnFilter 做 in-knn 预过滤（混合召回的精准形态）
+	q2 := NewQuery[product]().
+		Nearest(ColOf[product]("Embedding"), vec, 3).
+		KnnFilter(func(q *Query[product]) { q.Eq(cat, int64(2)) })
+	qj2, _ := json.Marshal(q2.BuildBody())
+	want2 := `{"knn":{"field":"embedding","filter":{"bool":{"must":[{"term":{"cat_id":2}}]}},"k":3,"num_candidates":50,"query_vector":[0.1,0.2]}}`
+	assertJSON(t, string(qj2), want2)
+}
+
+// TestQueryKNNNumCandidates 验证可显式设置 num_candidates。
+func TestQueryKNNNumCandidates(t *testing.T) {
+	vec := []float32{0.1, 0.2, 0.3}
+	q := NewQuery[product]().Nearest(ColOf[product]("Embedding"), vec, 5).KnnNumCandidates(200)
+	qj, _ := json.Marshal(q.BuildBody())
+	want := `{"knn":{"field":"embedding","k":5,"num_candidates":200,"query_vector":[0.1,0.2,0.3]}}`
+	assertJSON(t, string(qj), want)
+}
+
 // assertJSON 比较两个 JSON 是否语义相等（忽略 key 顺序）。
 func assertJSON(t *testing.T, got, want string) {
 	t.Helper()
