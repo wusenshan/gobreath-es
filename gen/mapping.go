@@ -218,6 +218,11 @@ func FromMapping(jsonStr string, opts Options) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	return assembleStructs(structs, opts)
+}
+
+// assembleStructs 应用命名覆盖并按输出模式渲染文件内容（FromMapping 与 FromJSON 共用）。
+func assembleStructs(structs []ESStruct, opts Options) (map[string]string, error) {
 	if len(structs) == 0 {
 		return nil, fmt.Errorf("esgen: 未能解析出任何文档结构")
 	}
@@ -225,7 +230,7 @@ func FromMapping(jsonStr string, opts Options) (map[string]string, error) {
 	if pkg == "" {
 		pkg = "model"
 	}
-	// 应用命名覆盖（仅作用于第一个顶层文档，单 mapping 场景）
+	// 应用命名覆盖（仅作用于第一个顶层文档，单文档场景）
 	if opts.StructName != "" {
 		structs[0].Name = opts.StructName
 	}

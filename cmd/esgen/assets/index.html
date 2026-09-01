@@ -57,6 +57,14 @@
 
   <div class="toolbar">
     <span id="modeChip" class="badge" style="background:var(--info-bg);color:var(--info)">待识别</span>
+    <label>输入类型
+      <select id="kind">
+        <option value="auto">自动识别</option>
+        <option value="mapping">ES mapping</option>
+        <option value="json">JSON 文档样例</option>
+        <option value="struct">Go 结构体</option>
+      </select>
+    </label>
     <label>上传 .go / .json
       <input type="file" id="upload" accept=".go,.json,.txt">
     </label>
@@ -66,8 +74,8 @@
     <div class="col">
       <div class="card">
         <h2>输入 / Input</h2>
-        <textarea id="source" placeholder="粘贴 type X struct { ... } 或 ES mapping JSON（{&quot;mappings&quot;:{&quot;properties&quot;:{...}}}）"></textarea>
-        <div class="hint" id="inHint">支持多结构体 / 多字段；自动识别 Go struct 与 ES mapping。</div>
+        <textarea id="source" placeholder="粘贴 type X struct { ... } / ES mapping / JSON 文档样例"></textarea>
+        <div class="hint" id="inHint">支持多结构体 / 多字段 / JSON 样例；自动识别 Go struct、ES mapping 与 JSON 文档。</div>
       </div>
     </div>
     <div class="col">
@@ -139,9 +147,10 @@ const DEFAULT_MAPPING = `{
 function detectKind(src){
   const t = src.trim();
   if(t.startsWith('{') || t.startsWith('[')){
-    // 疑似 JSON：含 mappings/properties/type 即判为 mapping
-    if(/"mappings"/.test(t) || /"properties"/.test(t) || /"\w+"\s*:\s*\{\s*"type"/.test(t)) return 'mapping';
-    return 'mapping'; // 兜底按 mapping 尝试
+    const low = t.toLowerCase();
+    if(/"mappings"/.test(low) || /"properties"/.test(low)) return 'mapping';
+    try { JSON.parse(t); } catch(e){ return ''; }
+    return 'json';
   }
   if(/type\s+\w+\s+struct/.test(t) || /^package\s+/m.test(t)) return 'struct';
   return '';
@@ -152,8 +161,9 @@ function refreshHint(){
   if(!src){ chip.textContent='待识别'; return; }
   const k = detectKind(src);
   if(k==='mapping'){ chip.textContent='已识别：ES mapping'; }
+  else if(k==='json'){ chip.textContent='已识别：JSON 文档样例'; }
   else if(k==='struct'){ chip.textContent='已识别：Go struct'; }
-  else { chip.textContent='无法识别（请确认是 Go struct 或 ES mapping JSON）'; }
+  else { chip.textContent='无法识别（请确认是 Go struct / ES mapping / JSON 样例）'; }
 }
 $('source').addEventListener('input', refreshHint);
 
@@ -196,8 +206,10 @@ async function generate(){
   const now=Date.now();
   if(now-_lastGen<400) return;          // 防抖：避免点击「生成」按钮时 blur+click 双触发
   _lastGen=now;
-  const src=$('source').value; const kind=detectKind(src);
-  if(!kind){ $('inHint').textContent='无法识别输入类型，请粘贴 Go struct 或 ES mapping JSON。'; $('inHint').className='hint warn'; return; }
+  const src=$('source').value;
+  let kind=$('kind').value;
+  if(kind==='auto'){ kind=detectKind(src); }
+  if(!kind){ $('inHint').textContent='无法识别输入类型，请粘贴 Go struct / ES mapping / JSON 样例，或手动选择类型。'; $('inHint').className='hint warn'; return; }
   $('inHint').textContent='生成中…'; $('inHint').className='hint';
   updateCli(kind);
   try{
@@ -206,7 +218,8 @@ async function generate(){
     const d=await r.json();
     if(d.error){ $('inHint').textContent='错误：'+d.error; $('inHint').className='hint warn'; return; }
     current.files=d.files; renderFiles();
-    $('modeChip').textContent=d.detected||(kind==='mapping'?'ES mapping':'Go struct');
+    const label={mapping:'ES mapping',json:'JSON 样例',struct:'Go struct'}[kind]||kind;
+    $('modeChip').textContent=d.detected||label;
     $('inHint').textContent='已生成 '+Object.keys(d.files).length+' 个文件。'; $('inHint').className='hint ok';
   }catch(err){ $('inHint').textContent='请求失败：'+err; $('inHint').className='hint warn'; }
 }

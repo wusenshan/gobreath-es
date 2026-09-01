@@ -70,21 +70,38 @@ func generateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := generateResponse{Files: map[string]string{}}
+	kind := req.Kind
+	if kind == "" || kind == "auto" {
+		kind = detectKindES(req.Source)
+	}
+	om := gen.PerType
+	switch strings.ToLower(req.Mode) {
+	case "twofiles", "two":
+		om = gen.TwoFiles
+	case "singlefile", "single":
+		om = gen.SingleFile
+	}
 	pkg := req.Package
 	if pkg == "" {
 		pkg = "model"
 	}
-	switch req.Kind {
+	switch kind {
 	case "mapping":
-		om := gen.PerType
-		switch strings.ToLower(req.Mode) {
-		case "twofiles", "two":
-			om = gen.TwoFiles
-		case "singlefile", "single":
-			om = gen.SingleFile
-		}
 		resp.Detected = "ES mapping / JSON"
 		files, err := gen.FromMapping(req.Source, gen.Options{
+			Package:    pkg,
+			IndexName:  req.IndexName,
+			StructName: req.StructName,
+			Mode:       om,
+		})
+		if err != nil {
+			resp.Error = err.Error()
+		} else {
+			resp.Files = files
+		}
+	case "json":
+		resp.Detected = "JSON 文档样例 / 推断 Doc"
+		files, err := gen.FromJSON(req.Source, gen.Options{
 			Package:    pkg,
 			IndexName:  req.IndexName,
 			StructName: req.StructName,
@@ -135,9 +152,31 @@ func generateHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.Files = map[string]string{outFile: string(data)}
 	default:
-		resp.Error = "kind 必须是 mapping 或 struct"
+		resp.Error = "无法识别输入类型（请粘贴 ES mapping / JSON 样例 / Go struct）"
 	}
 	writeJSON(w, resp)
+}
+
+// detectKindES 按内容嗅探 esgen 输入类型：ES mapping / JSON 文档样例 / Go struct。
+func detectKindES(src string) string {
+	s := strings.TrimSpace(src)
+	if s == "" {
+		return ""
+	}
+	low := strings.ToLower(s)
+	if strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[") {
+		var probe any
+		if json.Unmarshal([]byte(s), &probe) == nil {
+			if strings.Contains(low, "\"mappings\"") || strings.Contains(low, "\"properties\"") {
+				return "mapping"
+			}
+			return "json"
+		}
+	}
+	if strings.Contains(s, "struct") && (strings.Contains(s, "type ") || strings.HasPrefix(low, "package")) {
+		return "struct"
+	}
+	return ""
 }
 
 func saveHandler(w http.ResponseWriter, r *http.Request) {
