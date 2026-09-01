@@ -299,6 +299,46 @@ This project keeps the mainstream API in Go-native ES terms because it is:
 
 If needed later, a SQL adapter can still be added as a thin optional layer without changing the primary design.
 
+## Code generation (esgen)
+
+`esgen` turns Go structs or an ES mapping JSON into `TypeColumnSet` / `TypeCols`
+(`es.ColOf[T]("field")`) so you never hardcode field name strings. It is fully
+offline: it only parses text, never connects to Elasticsearch or runs uploaded code.
+
+### From Go structs
+
+Scan a directory for exported structs and emit the column closures for each:
+
+```bash
+go run github.com/wusenshan/gobreath-es/cmd/esgen -dir ./model -out ./model
+```
+
+### From an ES mapping
+
+Paste or upload an ES mapping JSON. The generator infers Go types
+(`keyword`/`text` -> `string`, `long`/`integer` -> `int64`/`int`, `double`/`float`
+-> `float64`/`float32`, `boolean` -> `bool`, `date` -> `time.Time`,
+`dense_vector(N)` -> `[]float32` with `es:"vector(N)"`), renders nested `object`
+fields as nested structs, and implements `IndexName()` on the top-level doc type.
+
+```bash
+# perType:   <Type>.go + <Type>_cols.go
+# twoFiles:  models.go + columns.go
+# singleFile: models_gen.go (column alias is Repos to avoid clashing with a field named Cols)
+go run github.com/wusenshan/gobreath-es/cmd/esgen \
+    -mapping mapping.json -pkg model -mode perType -type Product -index products -dir ./generated
+```
+
+### Web generator
+
+`esgen serve` starts a left/right split UI at `http://localhost:8080`: paste a Go
+file or a mapping JSON on the left, preview and copy or download the generated code
+on the right, switch between multiple files, and copy the equivalent CLI command.
+
+```bash
+go run github.com/wusenshan/gobreath-es/cmd/esgen -serve -addr :8080
+```
+
 ## Project status
 
 The framework already includes:

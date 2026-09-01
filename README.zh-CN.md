@@ -297,6 +297,45 @@ Elasticsearch SQL 对迁移和临时查询确实有用，但它并不是 ES 的�
 
 如果后续需要，还可以再增加一个 SQL 适配层作为辅助能力，而不是把它作为主入口。
 
+## 代码生成（esgen）
+
+`esgen` 把 Go 结构体或 ES mapping JSON 转成 `TypeColumnSet` / `TypeCols`
+（即 `es.ColOf[T]("字段名")`），从此不再手写字段名字符串。它**完全离线**：只做文本解析，
+绝不连接 Elasticsearch，也绝不执行上传的内容。
+
+### 从 Go 结构体生成
+
+扫描目录里的导出结构体，为每个生成字段闭包：
+
+```bash
+go run github.com/wusenshan/gobreath-es/cmd/esgen -dir ./model -out ./model
+```
+
+### 从 ES mapping 生成
+
+粘贴或上传一份 ES mapping JSON。生成器会推断 Go 类型
+（`keyword`/`text` -> `string`、`long`/`integer` -> `int64`/`int`、`double`/`float`
+-> `float64`/`float32`、`boolean` -> `bool`、`date` -> `time.Time`、
+`dense_vector(N)` -> `[]float32` 并带 `es:"vector(N)"`），把嵌套 `object` 渲染成嵌套结构体，
+并在顶层文档类型上实现 `IndexName()`。
+
+```bash
+# perType:    <Type>.go + <Type>_cols.go
+# twoFiles:   models.go + columns.go
+# singleFile: models_gen.go（列别名用 Repos，避免和名为 Cols 的字段冲突）
+go run github.com/wusenshan/gobreath-es/cmd/esgen \
+    -mapping mapping.json -pkg model -mode perType -type Product -index products -dir ./generated
+```
+
+### Web 生成器
+
+`esgen serve` 在 `http://localhost:8080` 启动一个左右分屏页面：左侧粘贴 Go 文件或 mapping
+JSON，右侧预览并可一键复制 / 下载生成的代码、在多个文件间切换，还能复制等价的 CLI 命令。
+
+```bash
+go run github.com/wusenshan/gobreath-es/cmd/esgen -serve -addr :8080
+```
+
 ## 项目现状
 
 框架已经具备：
