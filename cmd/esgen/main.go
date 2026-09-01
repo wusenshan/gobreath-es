@@ -20,6 +20,8 @@ func main() {
 		pkg       = flag.String("pkg", "model", "生成代码的包名")
 		mode      = flag.String("mode", "perType", "输出方式：perType / twoFiles / singleFile")
 		indexName = flag.String("index", "", "索引名（mapping 模式）；为空则用 plural(toSnake(StructName)) 兜底")
+		example   = flag.Bool("example", true, "附带「生成物即所用」示例代码（example.go）")
+		repo      = flag.Bool("repo", false, "附带 Repo[T] 便捷构造脚手架（<struct>_repo.go）")
 		serve     = flag.Bool("serve", false, "启动本地 Web 生成器（esgen serve）")
 		addr      = flag.String("addr", ":8080", "serve 监听地址")
 	)
@@ -31,12 +33,12 @@ func main() {
 	}
 
 	if *mapping != "" {
-		runMapping(*mapping, *dir, *pkg, *mode, *indexName, *types)
+		runMapping(*mapping, *dir, *pkg, *mode, *indexName, *types, *example, *repo)
 		return
 	}
 
 	if *jsonFile != "" {
-		runJSON(*jsonFile, *dir, *pkg, *mode, *indexName, *types)
+		runJSON(*jsonFile, *dir, *pkg, *mode, *indexName, *types, *example, *repo)
 		return
 	}
 
@@ -64,7 +66,7 @@ func main() {
 	fmt.Printf("esgen: 已生成 %s/%s\n", *dir, outFile)
 }
 
-func runMapping(path, dir, pkg, mode, indexName, structName string) {
+func runMapping(path, dir, pkg, mode, indexName, structName string, example, repo bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "esgen: 读取 mapping 文件: %v\n", err)
@@ -82,6 +84,8 @@ func runMapping(path, dir, pkg, mode, indexName, structName string) {
 		IndexName:  indexName,
 		StructName: structName,
 		Mode:       om,
+		Example:    example,
+		Repo:       repo,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "esgen: %v\n", err)
@@ -101,7 +105,7 @@ func runMapping(path, dir, pkg, mode, indexName, structName string) {
 	}
 }
 
-func runJSON(path, dir, pkg, mode, indexName, structName string) {
+func runJSON(path, dir, pkg, mode, indexName, structName string, example, repo bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "esgen: 读取 JSON 样例文件: %v\n", err)
@@ -119,6 +123,8 @@ func runJSON(path, dir, pkg, mode, indexName, structName string) {
 		IndexName:  indexName,
 		StructName: structName,
 		Mode:       om,
+		Example:    example,
+		Repo:       repo,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "esgen: %v\n", err)

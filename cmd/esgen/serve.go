@@ -18,11 +18,13 @@ var assetsFS embed.FS
 
 type generateRequest struct {
 	Source     string `json:"source"`
-	Kind       string `json:"kind"` // "mapping" | "struct"
+	Kind       string `json:"kind"` // "mapping" | "struct" | "json" | ""(自动)
 	Package    string `json:"pkg"`
 	Mode       string `json:"mode"`
 	IndexName  string `json:"index"`
 	StructName string `json:"structName"`
+	Example    bool   `json:"example"` // 附示例代码
+	Repo       bool   `json:"repo"`    // 附 Repo 脚手架
 }
 
 type generateResponse struct {
@@ -93,6 +95,8 @@ func generateHandler(w http.ResponseWriter, r *http.Request) {
 			IndexName:  req.IndexName,
 			StructName: req.StructName,
 			Mode:       om,
+			Example:    req.Example,
+			Repo:       req.Repo,
 		})
 		if err != nil {
 			resp.Error = err.Error()
@@ -106,6 +110,8 @@ func generateHandler(w http.ResponseWriter, r *http.Request) {
 			IndexName:  req.IndexName,
 			StructName: req.StructName,
 			Mode:       om,
+			Example:    req.Example,
+			Repo:       req.Repo,
 		})
 		if err != nil {
 			resp.Error = err.Error()
