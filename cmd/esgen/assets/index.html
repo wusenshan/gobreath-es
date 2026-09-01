@@ -123,6 +123,19 @@
 const $ = id => document.getElementById(id);
 let current = { files: {}, active: null };
 
+// 首次进入的默认示例（含 dense_vector 与 date）：打开页面即见效果
+const DEFAULT_MAPPING = `{
+  "mappings": {
+    "properties": {
+      "name":       { "type": "text" },
+      "price":      { "type": "double" },
+      "tags":       { "type": "keyword" },
+      "embedding":  { "type": "dense_vector", "dims": 128 },
+      "created_at": { "type": "date" }
+    }
+  }
+}`;
+
 function detectKind(src){
   const t = src.trim();
   if(t.startsWith('{') || t.startsWith('[')){
@@ -227,6 +240,13 @@ $('saveBtn').onclick=async()=>{
   if(d.error){ $('saveStatus').textContent='保存失败：'+d.error; $('saveStatus').style.color='var(--warn)'; return; }
   $('saveStatus').textContent='已写入 '+d.written.length+' 个，跳过 '+d.skipped.length+' 个'; $('saveStatus').style.color='var(--ok)';
 };
+
+// 首次进入：若输入为空则填默认示例并自动生成一次，降低上手门槛
+if(!$('source').value.trim()){
+  $('source').value = DEFAULT_MAPPING;
+  refreshHint();
+  generate();
+}
 </script>
 </body>
 </html>

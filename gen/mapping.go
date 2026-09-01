@@ -69,6 +69,10 @@ type ESStruct struct {
 func ParseMapping(jsonStr string) ([]ESStruct, error) {
 	var raw map[string]any
 	if err := json.Unmarshal([]byte(jsonStr), &raw); err != nil {
+		if se, ok := err.(*json.SyntaxError); ok {
+			line := strings.Count(jsonStr[:se.Offset], "\n") + 1
+			return nil, fmt.Errorf("esgen: 解析 mapping JSON 第 %d 行: %s", line, err.Error())
+		}
 		return nil, fmt.Errorf("esgen: 解析 mapping JSON: %w", err)
 	}
 	props := extractProperties(raw)
