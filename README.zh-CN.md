@@ -214,6 +214,54 @@ q := es.NewQuery[Product]().Aggregate(agg)
 result, err := repo.Aggregate(ctx, q)
 ```
 
+## 写入安全与逃生舱
+
+### 乐观并发控制（OCC）
+
+Elasticsearch 通过 `_seq_no` / `_primary_term` 支持冲突检测。先读取文档当前版本，
+修改后再带上 `es.IfSeqNoPrimaryTerm` 写回：只有当文档版本未被其他人改动时才成功，
+否则 ES 返回 409 冲突。
+
+```go
+doc, meta, err := repo.GetWithMeta(ctx, "p1") // meta.SeqNo / meta.PrimaryTerm
+if err != nil {
+    log.Fatal(err)
+}
+doc.Price = 999
+
+// 仅当文档仍处于该版本时才写入成功
+if err := repo.Index(ctx, doc, es.IfSeqNoPrimaryTerm(meta.SeqNo, meta.PrimaryTerm)); err != nil {
+    log.Fatal(err)
+}
+```
+
+`SearchResult` 同样按命中暴露 `SeqNos` / `PrimaryTerms`（以及 `HitMeta(i)` 方法），
+因此批量检索后也能直接做乐观并发。`Update` 与 `Delete` 也接受同一选项。
+
+### Upsert
+
+文档不存在则插入，存在则作为局部更新合并。
+
+```go
+// 单文档（需声明 id 字段）
+repo.Upsert(ctx, Product{ID: "p1", Name: "Phone"})
+
+// 批量 upsert
+repo.BulkUpsert(ctx, []Product{{ID: "p1"}, {ID: "p2"}})
+```
+
+### 原始检索逃生舱
+
+当查询构造器覆盖不到（脚本排序、脚本指标聚合、冷门聚合等）时，直接以原始 DSL
+（map）发起检索并拿回完整 ES 响应。
+
+```go
+raw, err := repo.SearchRaw(ctx, map[string]any{
+    "query": map[string]any{"match_all": map[string]any{}},
+    "aggs":  map[string]any{"max_price": map[string]any{"max": map[string]any{"field": "price"}}},
+})
+```
+
 ## ORM 风格兼容层
 
 如果你更习惯 SQL / ORM 的命名，也可以直接用兼容别名：
@@ -260,6 +308,9 @@ Elasticsearch SQL 对迁移和临时查询确实有用，但它并不是 ES 的�
 - 索引管理
 - 聚合构造器
 - 混合向量检索
+- 乐观并发控制（OCC）
+- Upsert（单文档与批量）
+- 原始检索逃生舱
 - 日志与请求跟踪
 
 当前路线是：在保持 ES 原生语义主线的前提下，继续强化工程能力和可观测性。

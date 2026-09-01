@@ -15,7 +15,9 @@ import (
 // ---- 底层传输（非泛型，索引名 + 通用参数）----
 
 // IndexDoc 写入单个文档。id 为空时由 ES 自动生成。
-func (c *Client) IndexDoc(ctx context.Context, index string, id string, doc any) error {
+// 可选传入 IfSeqNoPrimaryTerm 启用乐观并发控制：仅当文档当前的
+// _seq_no/_primary_term 匹配时才写入，否则返回错误（典型为 409 冲突）。
+func (c *Client) IndexDoc(ctx context.Context, index string, id string, doc any, opts ...WriteOption) error {
 	body, err := json.Marshal(doc)
 	if err != nil {
 		return fmt.Errorf("gobreath-es: 序列化文档失败: %w", err)
@@ -24,12 +26,13 @@ func (c *Client) IndexDoc(ctx context.Context, index string, id string, doc any)
 	if id != "" {
 		path = index + "/_doc/" + id
 	}
-	opts := []func(*esapi.IndexRequest){c.Client.Index.WithContext(ctx)}
+	reqOpts := []func(*esapi.IndexRequest){c.Client.Index.WithContext(ctx)}
 	if id != "" {
-		opts = append(opts, c.Client.Index.WithDocumentID(id))
+		reqOpts = append(reqOpts, c.Client.Index.WithDocumentID(id))
 	}
+	reqOpts = c.applyIndexCAS(reqOpts, opts)
 	res, err := c.doLog("POST", path, body, func() (*esapi.Response, error) {
-		return c.Client.Index(index, bytes.NewReader(body), opts...)
+		return c.Client.Index(index, bytes.NewReader(body), reqOpts...)
 	})
 	m, err := decodeResponse(res, err)
 	if err != nil {
@@ -41,6 +44,51 @@ func (c *Client) IndexDoc(ctx context.Context, index string, id string, doc any)
 		}
 	}
 	return nil
+}
+
+// applyIndexCAS 把 WriteOption 里的乐观并发控制附加到 Index 请求选项上。
+func (c *Client) applyIndexCAS(base []func(*esapi.IndexRequest), opts []WriteOption) []func(*esapi.IndexRequest) {
+	o := &writeOpts{}
+	for _, fn := range opts {
+		fn(o)
+	}
+	if o.hasCAS {
+		base = append(base,
+			c.Client.Index.WithIfSeqNo(int(o.ifSeqNo)),
+			c.Client.Index.WithIfPrimaryTerm(int(o.ifPrimaryTerm)),
+		)
+	}
+	return base
+}
+
+// applyUpdateCAS 把 WriteOption 里的乐观并发控制附加到 Update 请求选项上。
+func (c *Client) applyUpdateCAS(base []func(*esapi.UpdateRequest), opts []WriteOption) []func(*esapi.UpdateRequest) {
+	o := &writeOpts{}
+	for _, fn := range opts {
+		fn(o)
+	}
+	if o.hasCAS {
+		base = append(base,
+			c.Client.Update.WithIfSeqNo(int(o.ifSeqNo)),
+			c.Client.Update.WithIfPrimaryTerm(int(o.ifPrimaryTerm)),
+		)
+	}
+	return base
+}
+
+// applyDeleteCAS 把 WriteOption 里的乐观并发控制附加到 Delete 请求选项上。
+func (c *Client) applyDeleteCAS(base []func(*esapi.DeleteRequest), opts []WriteOption) []func(*esapi.DeleteRequest) {
+	o := &writeOpts{}
+	for _, fn := range opts {
+		fn(o)
+	}
+	if o.hasCAS {
+		base = append(base,
+			c.Client.Delete.WithIfSeqNo(int(o.ifSeqNo)),
+			c.Client.Delete.WithIfPrimaryTerm(int(o.ifPrimaryTerm)),
+		)
+	}
+	return base
 }
 
 // PutDoc 上传/覆盖单个文档，等价于 ES 的 PUT /_doc/{id} 语义。
@@ -105,27 +153,58 @@ func (c *Client) BulkIndexDocs(ctx context.Context, index string, docs []any, id
 	return nil
 }
 
-// GetDoc 按 id 读取文档，反序列化到 dest。不存在返回 ErrNotFound。
-func (c *Client) GetDoc(ctx context.Context, index, id string, dest any) error {
-	res, err := c.doLog("GET", index+"/_doc/"+id, nil, func() (*esapi.Response, error) {
-		return c.Client.Get(index, id, c.Client.Get.WithContext(ctx))
+// BulkUpsertDocs 批量 upsert（NDJSON _bulk）：每个文档按 _id 进行 upsert，
+// 不存在则插入、存在则局部合并。ids 与 docs 一一对应，ids[i] 为空视为非法（upsert 必须显式 id）。
+func (c *Client) BulkUpsertDocs(ctx context.Context, index string, docs []any, ids []string) error {
+	if len(docs) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	for i, doc := range docs {
+		id := ""
+		if i < len(ids) {
+			id = ids[i]
+		}
+		if id == "" {
+			return fmt.Errorf("gobreath-es: bulk upsert 第 %d 项缺少文档 id", i)
+		}
+		meta, err := json.Marshal(map[string]any{"update": map[string]any{"_index": index, "_id": id}})
+		if err != nil {
+			return err
+		}
+		b.Write(meta)
+		b.WriteByte('\n')
+		body, err := json.Marshal(map[string]any{"doc": doc, "doc_as_upsert": true})
+		if err != nil {
+			return err
+		}
+		b.Write(body)
+		b.WriteByte('\n')
+	}
+	ndjson := []byte(b.String())
+	res, err := c.doLog("POST", index+"/_bulk", ndjson, func() (*esapi.Response, error) {
+		return c.Client.Bulk(
+			bytes.NewReader(ndjson),
+			c.Client.Bulk.WithContext(ctx),
+		)
 	})
+	m, err := decodeResponse(res, err)
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
-	if res.StatusCode == http.StatusNotFound {
-		return ErrNotFound
+	if errs, ok := m["errors"].(bool); ok && errs {
+		return fmt.Errorf("gobreath-es: bulk upsert 存在失败项: %v", m["items"])
 	}
-	if res.IsError() {
-		body, _ := io.ReadAll(res.Body)
-		return fmt.Errorf("gobreath-es: get 失败 status=%d body=%s", res.StatusCode, string(body))
-	}
-	var m map[string]any
-	if err := json.NewDecoder(res.Body).Decode(&m); err != nil {
+	return nil
+}
+
+// GetDoc 按 id 读取文档，反序列化到 dest。不存在返回 ErrNotFound。
+func (c *Client) GetDoc(ctx context.Context, index, id string, dest any) error {
+	raw, err := c.getDocRaw(ctx, index, id)
+	if err != nil {
 		return err
 	}
-	src, ok := m["_source"]
+	src, ok := raw["_source"]
 	if !ok {
 		return ErrNotFound
 	}
@@ -136,10 +215,39 @@ func (c *Client) GetDoc(ctx context.Context, index, id string, dest any) error {
 	return json.Unmarshal(srcBytes, dest)
 }
 
+// getDocRaw 按 id 读取文档，返回完整响应 map（含 _source / _seq_no / _primary_term / _id 等）。
+// 不存在返回 ErrNotFound。供 GetWithMeta 等需要元信息的场景使用。
+func (c *Client) getDocRaw(ctx context.Context, index, id string) (map[string]any, error) {
+	res, err := c.doLog("GET", index+"/_doc/"+id, nil, func() (*esapi.Response, error) {
+		return c.Client.Get(index, id, c.Client.Get.WithContext(ctx))
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusNotFound {
+		return nil, ErrNotFound
+	}
+	if res.IsError() {
+		body, _ := io.ReadAll(res.Body)
+		return nil, fmt.Errorf("gobreath-es: get 失败 status=%d body=%s", res.StatusCode, string(body))
+	}
+	var m map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 // DeleteDoc 按 id 删除文档。不存在视为成功（幂等）。
-func (c *Client) DeleteDoc(ctx context.Context, index, id string) error {
+// 可选传入 IfSeqNoPrimaryTerm 启用乐观并发控制：仅当文档当前版本匹配时才删除。
+func (c *Client) DeleteDoc(ctx context.Context, index, id string, opts ...WriteOption) error {
+	reqOpts := []func(*esapi.DeleteRequest){
+		c.Client.Delete.WithContext(ctx),
+	}
+	reqOpts = c.applyDeleteCAS(reqOpts, opts)
 	res, err := c.doLog("DELETE", index+"/_doc/"+id, nil, func() (*esapi.Response, error) {
-		return c.Client.Delete(index, id, c.Client.Delete.WithContext(ctx))
+		return c.Client.Delete(index, id, reqOpts...)
 	})
 	if err != nil {
 		return err
@@ -156,8 +264,33 @@ func (c *Client) DeleteDoc(ctx context.Context, index, id string) error {
 }
 
 // UpdateDoc 按 id 局部更新（partial doc）。
-func (c *Client) UpdateDoc(ctx context.Context, index, id string, partial any) error {
+// 可选传入 IfSeqNoPrimaryTerm 启用乐观并发控制（仅在文档当前版本匹配时更新，否则报错）。
+func (c *Client) UpdateDoc(ctx context.Context, index, id string, partial any, opts ...WriteOption) error {
 	body, err := json.Marshal(map[string]any{"doc": partial})
+	if err != nil {
+		return err
+	}
+	reqOpts := []func(*esapi.UpdateRequest){
+		c.Client.Update.WithContext(ctx),
+	}
+	reqOpts = c.applyUpdateCAS(reqOpts, opts)
+	res, err := c.doLog("POST", index+"/_update/"+id, body, func() (*esapi.Response, error) {
+		return c.Client.Update(index, id, bytes.NewReader(body), reqOpts...)
+	})
+	_, err = decodeResponse(res, err)
+	return err
+}
+
+// UpsertDoc 按 id 进行 upsert：文档不存在则插入 doc，存在则把 doc 作为局部更新合并进去。
+// 底层使用 _update + doc_as_upsert（ES-native upsert 语义）。id 不可为空。
+func (c *Client) UpsertDoc(ctx context.Context, index, id string, doc any) error {
+	if id == "" {
+		return fmt.Errorf("gobreath-es: upsert requires a document id")
+	}
+	body, err := json.Marshal(map[string]any{
+		"doc":            doc,
+		"doc_as_upsert": true,
+	})
 	if err != nil {
 		return err
 	}

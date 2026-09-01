@@ -216,6 +216,55 @@ q := es.NewQuery[Product]().Aggregate(agg)
 result, err := repo.Aggregate(ctx, q)
 ```
 
+## Write safety & escape hatch
+
+### Optimistic concurrency control (OCC)
+
+Elasticsearch supports conflict detection via `_seq_no` / `_primary_term`. Read the
+current version, modify the document, then write it back with `es.IfSeqNoPrimaryTerm`
+so the write only succeeds if nobody changed the document in between (otherwise ES
+returns a 409 conflict).
+
+```go
+doc, meta, err := repo.GetWithMeta(ctx, "p1") // meta.SeqNo / meta.PrimaryTerm
+if err != nil {
+    log.Fatal(err)
+}
+doc.Price = 999
+
+// only succeeds if the document is still at this version
+if err := repo.Index(ctx, doc, es.IfSeqNoPrimaryTerm(meta.SeqNo, meta.PrimaryTerm)); err != nil {
+    log.Fatal(err)
+}
+```
+
+`SearchResult` also exposes per-hit `SeqNos` / `PrimaryTerms` (and `HitMeta(i)`), so
+you can apply OCC after a bulk search too. `Update` and `Delete` accept the same option.
+
+### Upsert
+
+Insert a document if it does not exist, otherwise merge it as a partial update.
+
+```go
+// single doc (needs an id field)
+repo.Upsert(ctx, Product{ID: "p1", Name: "Phone"})
+
+// bulk upsert
+repo.BulkUpsert(ctx, []Product{{ID: "p1"}, {ID: "p2"}})
+```
+
+### Raw search escape hatch
+
+When the query builder cannot express what you need (scripted sorting, scripted
+metrics, exotic aggregations), send a raw DSL map and get the full ES response back.
+
+```go
+raw, err := repo.SearchRaw(ctx, map[string]any{
+    "query": map[string]any{"match_all": map[string]any{}},
+    "aggs":  map[string]any{"max_price": map[string]any{"max": map[string]any{"field": "price"}}},
+})
+```
+
 ## Compatibility with ORM-style naming
 
 If you come from SQL or MyBatis-Plus habits, the convenience aliases are still available.
@@ -261,6 +310,9 @@ The framework already includes:
 - index management
 - aggregation builders
 - hybrid vector search
+- optimistic concurrency control (OCC)
+- upsert (single & bulk)
+- raw search escape hatch
 - logging and request tracing
 
 The design direction is to keep the canonical API close to Elasticsearch while retaining lightweight compatibility helpers for ORM-oriented users.
